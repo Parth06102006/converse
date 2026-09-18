@@ -197,7 +197,7 @@ class AsrEngineConfig:
     """Configuration for streaming ASR engine."""
 
     sample_rate: int = 16000
-    partial_interval_ms: float = 200.0  # Emit partial transcript every 200ms
+    partial_interval_ms: float = 1400.0  # Emit partial transcript every 1.4s of speech audio
     min_audio_duration_ms: float = 180.0  # Minimum audio to attempt partial inference
     max_utterance_duration_sec: float = 30.0  # Cap on rolling utterance buffer
     hallucination_phrases: tuple[str, ...] = (
@@ -220,7 +220,8 @@ class AsrSessionState:
         )
         self.vad = VoiceActivityDetector(config=vad_config or VadConfig(sample_rate=config.sample_rate))
         self.sequence_id: int = 0
-        self.last_partial_time: float = 0.0
+        self.stream_audio_ms: float = 0.0
+        self.last_partial_audio_ms: float = 0.0
         self.last_partial_text: str = ""
         self.accumulated_utterance_samples: list[np.ndarray] = []
         self.utterance_active: bool = False
@@ -232,7 +233,7 @@ class AsrSessionState:
     def reset_utterance(self) -> None:
         self.accumulated_utterance_samples.clear()
         self.last_partial_text = ""
-        self.last_partial_time = 0.0
+        self.last_partial_audio_ms = self.stream_audio_ms
         self.utterance_active = False
         self.buffer.clear()
         self.vad.reset()
@@ -253,10 +254,7 @@ class StreamingAsrEngine:
         if backend is not None:
             self.backend = backend
         else:
-            try:
-                self.backend = FasterWhisperBackend()
-            except (ImportError, RuntimeError, FileNotFoundError, OSError):
-                self.backend = MockAsrBackend(default_transcript="")
+            self.backend = FasterWhisperBackend()
 
         self._sessions: dict[str, AsrSessionState] = {}
 
@@ -316,7 +314,9 @@ class StreamingAsrEngine:
         if len(samples) == 0:
             return []
 
-        # 2. Append to buffer
+        # 2. Append to buffer and update stream position
+        chunk_ms = (len(samples) / self.config.sample_rate) * 1000.0
+        session.stream_audio_ms += chunk_ms
         session.buffer.append(samples)
         session.accumulated_utterance_samples.append(samples)
 
@@ -329,7 +329,6 @@ class StreamingAsrEngine:
             session.utterance_active = True
 
         events: list[AsrTranscriptEvent] = []
-        now = time.perf_counter()
 
         # 4. Handle Utterance Boundary (Silence Hangover Reached -> Final Transcript)
         if is_boundary and session.utterance_active:
@@ -359,21 +358,21 @@ class StreamingAsrEngine:
             return events
 
         # 5. Handle Streaming Partial Hypothesis (isFinal=False)
-        time_since_last_partial = (now - session.last_partial_time) * 1000.0
+        audio_since_last_partial = session.stream_audio_ms - session.last_partial_audio_ms
         current_buffered_ms = session.buffer.duration_ms
 
         if (
             session.utterance_active
             and current_buffered_ms >= self.config.min_audio_duration_ms
-            and time_since_last_partial >= self.config.partial_interval_ms
+            and audio_since_last_partial >= self.config.partial_interval_ms
         ):
             window = session.buffer.get_all()
             text, confidence, timestamps = self.backend.transcribe(window, self.config.sample_rate)
             clean_text = self.sanitize_transcript(text)
+            session.last_partial_audio_ms = session.stream_audio_ms
 
             if clean_text and not self.is_hallucination(clean_text):
                 proc_time_ms = (time.perf_counter() - start_proc_time) * 1000.0
-                session.last_partial_time = now
                 session.last_partial_text = clean_text
 
                 event = AsrTranscriptEvent(

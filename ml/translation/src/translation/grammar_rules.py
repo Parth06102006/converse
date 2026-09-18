@@ -172,6 +172,97 @@ LEMMA_MAP: dict[str, str] = {
     "arrived": "arrive",
     "arrives": "arrive",
     "arriving": "arrive",
+    "left": "leave",
+    "leaves": "leave",
+    "leaving": "leave",
+    "danced": "dance",
+    "dances": "dance",
+    "dancing": "dance",
+}
+
+KNOWN_VERBS: set[str] = {
+    "go", "went", "gone", "going", "goes",
+    "see", "saw", "seen", "seeing", "sees",
+    "come", "came", "coming", "comes",
+    "have", "had", "has", "having",
+    "eat", "ate", "eaten", "eating", "eats",
+    "buy", "bought", "buying", "buys",
+    "run", "ran", "running", "runs",
+    "like", "liked", "liking", "likes",
+    "want", "wanted", "wanting", "wants",
+    "need", "needed", "needing", "needs",
+    "help", "helped", "helping", "helps",
+    "kick", "kicked", "kicking", "kicks",
+    "meet", "met", "meeting", "meets",
+    "talk", "talked", "talking", "talks",
+    "live", "lived", "living", "lives",
+    "arrive", "arrived", "arriving", "arrives",
+    "leave", "left", "leaving", "leaves",
+    "walk", "walked", "walking", "walks",
+    "dance", "danced", "dancing", "dances",
+    "sleep", "slept", "sleeping", "sleeps",
+    "play", "played", "playing", "plays",
+    "work", "worked", "working", "works",
+    "give", "gave", "given", "giving", "gives",
+    "take", "took", "taken", "taking", "takes",
+    "make", "made", "making", "makes",
+    "know", "knew", "known", "knowing", "knows",
+    "think", "thought", "thinking", "thinks",
+    "tell", "told", "telling", "tells",
+    "ask", "asked", "asking", "asks",
+    "say", "said", "saying", "says",
+    "feel", "felt", "feeling", "feels",
+    "drink", "drank", "drunk", "drinking", "drinks",
+    "write", "wrote", "written", "writing", "writes",
+    "read", "reading", "reads",
+    "listen", "listened", "listening", "listens",
+    "hear", "heard", "hearing", "hears",
+    "open", "opened", "opening", "opens",
+    "close", "closed", "closing", "closes",
+    "stand", "stood", "standing", "stands",
+    "sit", "sat", "sitting", "sits",
+    "jump", "jumped", "jumping", "jumps",
+    "swim", "swam", "swimming", "swims",
+    "drive", "drove", "driven", "driving", "drives",
+    "wait", "waited", "waiting", "waits",
+    "stop", "stopped", "stopping", "stops",
+    "start", "started", "starting", "starts",
+    "finish", "finished", "finishing", "finishes",
+    "teach", "taught", "teaching", "teaches",
+    "learn", "learned", "learnt", "learning", "learns",
+    "study", "studied", "studying", "studies",
+    "cook", "cooked", "cooking", "cooks",
+    "clean", "cleaned", "cleaning", "cleans",
+    "wash", "washed", "washing", "washes",
+    "love", "loved", "loving", "loves",
+    "hate", "hated", "hating", "hates",
+    "hope", "hoped", "hoping", "hopes",
+    "try", "tried", "trying", "tries",
+    "remember", "remembered", "remembering", "remembers",
+    "forget", "forgot", "forgotten", "forgetting", "forgets",
+    "understand", "understood", "understanding", "understands",
+}
+
+KNOWN_ADJECTIVES: set[str] = {
+    "happy", "sad", "angry", "tired", "hungry", "thirsty", "hot", "cold",
+    "good", "bad", "big", "small", "tall", "short", "fast", "slow",
+    "beautiful", "ugly", "clean", "dirty", "easy", "hard", "difficult",
+    "new", "old", "young", "rich", "poor", "strong", "weak", "smart",
+    "busy", "quiet", "loud", "fine", "ready", "funny", "nice", "blue",
+    "red", "green", "yellow", "white", "black", "orange",
+}
+
+COMMON_NOUNS: set[str] = {
+    "boy", "girl", "man", "woman", "child", "children", "baby",
+    "dog", "cat", "bird", "fish", "animal", "pet",
+    "car", "bus", "train", "plane", "boat", "bike",
+    "book", "paper", "pen", "pencil", "computer", "phone",
+    "house", "home", "room", "school", "store", "hospital", "office",
+    "food", "water", "coffee", "tea", "milk", "bread", "apple", "cake",
+    "ball", "door", "window", "table", "chair", "bed", "box",
+    "name", "time", "day", "week", "month", "year", "money",
+    "friend", "family", "mother", "father", "sister", "brother",
+    "teacher", "doctor", "police", "city", "country", "world",
 }
 
 
@@ -241,9 +332,10 @@ class GrammarRuleCompiler:
         cleaned = re.sub(r"([?.!,;])", r" \1 ", text)
         return [w.strip() for w in cleaned.split() if w.strip()]
 
-    def parse_word(self, word: str) -> Token:
+    def parse_word(self, word: str, is_sentence_start: bool = False) -> Token:
         """Categorize an individual English word."""
-        lower = word.lower().strip("?.!,;")
+        clean_word = word.strip("?.!,;")
+        lower = clean_word.lower()
         lemma = LEMMA_MAP.get(lower, lower)
         gloss = PRONOUN_MAP.get(lower, lemma.upper())
 
@@ -254,8 +346,9 @@ class GrammarRuleCompiler:
         is_aux = lower in DO_SUPPORT or lower in ("will", "would", "shall", "should", "can", "could", "may", "might")
         is_neg = lower in NEGATION_WORDS
         is_pron = lower in PRONOUN_MAP
+        is_verb = lower in KNOWN_VERBS or lower.endswith(("ing", "ed"))
+        is_adj = lower in KNOWN_ADJECTIVES
 
-        pos = "NOUN"
         if is_pron:
             pos = "PRON"
         elif is_time:
@@ -266,6 +359,16 @@ class GrammarRuleCompiler:
             pos = "AUX"
         elif is_neg:
             pos = "PART"
+        elif is_verb:
+            pos = "VERB"
+        elif is_adj:
+            pos = "ADJ"
+        elif clean_word and clean_word[0].isupper() and (not is_sentence_start or lower not in COMMON_NOUNS):
+            pos = "PROPN"
+        elif lower in COMMON_NOUNS:
+            pos = "NOUN"
+        else:
+            pos = "NOUN"
 
         return Token(
             raw_text=word,
@@ -315,7 +418,8 @@ class GrammarRuleCompiler:
                 sentence_type=SentenceType.STATEMENT,
             )
 
-        parsed = [self.parse_word(w) for w in raw_words if w not in ("?", "!", ".", ",", ";")]
+        filtered_words = [w for w in raw_words if w not in ("?", "!", ".", ",", ";")]
+        parsed = [self.parse_word(w, is_sentence_start=(idx == 0)) for idx, w in enumerate(filtered_words)]
         if not parsed:
             return GrammarTransformResult(
                 original_text=english_text,

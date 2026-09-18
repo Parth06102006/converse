@@ -119,12 +119,13 @@ class SpatialLociTracker:
             if previous_entities and previous_entities[0] in self._session_referents:
                 locus = self._session_referents[previous_entities[0]]
                 return LOCI_COORDINATES[locus]
-            if self._assigned_order:
-                # Use most recently assigned referent locus
-                most_recent = self._assigned_order[-1]
-                return LOCI_COORDINATES[self._session_referents[most_recent]]
-            # Default third person to left locus
-            return LOCI_COORDINATES["left"]
+            if len(self._session_referents) == 1:
+                # Unambiguous single discourse referent in session: bind pronoun to it
+                single_referent = self._assigned_order[0]
+                return LOCI_COORDINATES[self._session_referents[single_referent]]
+            # Multiple active referents without explicit antecedent or no referents:
+            # fall back to neutral space to prevent false binding
+            return LOCI_COORDINATES["neutral_space"]
 
         # 4. Cognitive / mental words map toward forehead anchor
         if upper in ("KNOW", "THINK", "REMEMBER", "FORGET", "UNDERSTAND"):

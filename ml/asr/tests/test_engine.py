@@ -13,7 +13,7 @@ from asr.engine import (
     StreamingAsrEngine,
     WordTimestamp,
 )
-from asr.vad import VadConfig
+from asr.vad import SileroOnnxVadBackend, VadConfig
 
 
 def make_sine_chunk(freq: float = 350.0, duration_sec: float = 0.05, amp: float = 0.3) -> np.ndarray:
@@ -37,6 +37,23 @@ class TestStreamingAsrEngineLifecycle:
             default_confidence=0.92,
         )
 
+    def test_default_engine_selects_silero_and_faster_whisper(self) -> None:
+        engine = StreamingAsrEngine()
+        assert isinstance(engine.backend, FasterWhisperBackend)
+        sess = engine.get_or_create_session("prod-test")
+        assert sess.vad.config.use_neural is True
+        assert isinstance(sess.vad.backend, SileroOnnxVadBackend)
+
+    def test_engine_fails_on_model_init_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import asr.engine
+
+        def mock_failing_init(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("Model weight loading failed")
+
+        monkeypatch.setattr(asr.engine, "FasterWhisperBackend", mock_failing_init)
+        with pytest.raises(RuntimeError, match="Model weight loading failed"):
+            StreamingAsrEngine()
+
     def test_partial_transcript_emission(self, mock_backend: MockAsrBackend) -> None:
         engine = StreamingAsrEngine(
             config=AsrEngineConfig(
@@ -44,7 +61,7 @@ class TestStreamingAsrEngineLifecycle:
                 min_audio_duration_ms=100.0,
             ),
             backend=mock_backend,
-            vad_config=VadConfig(min_speech_duration_ms=50),
+            vad_config=VadConfig(min_speech_duration_ms=50, use_neural=False),
         )
         session_id = "test-session-partial"
         speech_chunk = make_sine_chunk(duration_sec=0.05)
@@ -72,6 +89,7 @@ class TestStreamingAsrEngineLifecycle:
             vad_config=VadConfig(
                 min_speech_duration_ms=60,
                 min_silence_duration_ms=150,
+                use_neural=False,
             ),
         )
         session_id = "test-session-final"
@@ -100,7 +118,7 @@ class TestStreamingAsrEngineLifecycle:
         engine = StreamingAsrEngine(
             config=AsrEngineConfig(min_audio_duration_ms=100.0),
             backend=mock_backend,
-            vad_config=VadConfig(min_speech_duration_ms=60, min_silence_duration_ms=300),
+            vad_config=VadConfig(min_speech_duration_ms=60, min_silence_duration_ms=300, use_neural=False),
         )
         session_id = "continuous-stream"
         speech_chunk = make_sine_chunk(duration_sec=0.1)
@@ -124,7 +142,7 @@ class TestStreamingAsrEngineLifecycle:
         engine = StreamingAsrEngine(
             config=AsrEngineConfig(min_audio_duration_ms=100.0),
             backend=mock_backend,
-            vad_config=VadConfig(min_speech_duration_ms=50),
+            vad_config=VadConfig(min_speech_duration_ms=50, use_neural=False),
         )
         session_id = "test-flush-session"
         speech = make_sine_chunk(duration_sec=0.25)
@@ -143,7 +161,7 @@ class TestStreamingAsrEngineLifecycle:
             return "Thank you for watching", 0.99, []
 
         backend = MockAsrBackend(custom_transcriber=hallucinating_backend)
-        engine = StreamingAsrEngine(backend=backend)
+        engine = StreamingAsrEngine(backend=backend, vad_config=VadConfig(use_neural=False))
 
         session_id = "test-hallucination"
         speech = make_sine_chunk(duration_sec=0.3)
@@ -154,7 +172,7 @@ class TestStreamingAsrEngineLifecycle:
         assert len(flushed) == 0
 
     def test_repetitive_ngram_hallucination_suppression(self) -> None:
-        engine = StreamingAsrEngine(backend=MockAsrBackend())
+        engine = StreamingAsrEngine(backend=MockAsrBackend(), vad_config=VadConfig(use_neural=False))
 
         assert engine.is_hallucination("blah blah blah blah")
         assert engine.is_hallucination("thank you for watching")
@@ -170,7 +188,7 @@ class TestStreamingAsrEngineLifecycle:
                 min_audio_duration_ms=50.0,
             ),
             backend=mock_backend,
-            vad_config=VadConfig(min_speech_duration_ms=40),
+            vad_config=VadConfig(min_speech_duration_ms=40, use_neural=False),
         )
         s1 = "sess-1"
         s2 = "sess-2"
@@ -188,7 +206,7 @@ class TestStreamingAsrEngineLifecycle:
         assert s2 in engine._sessions
 
     def test_event_dict_schema_serialization(self, mock_backend: MockAsrBackend) -> None:
-        engine = StreamingAsrEngine(backend=mock_backend)
+        engine = StreamingAsrEngine(backend=mock_backend, vad_config=VadConfig(use_neural=False))
         engine.process_audio_chunk(
             "sess-100",
             make_sine_chunk(duration_sec=0.3),
@@ -203,6 +221,7 @@ class TestStreamingAsrEngineLifecycle:
         assert "latencyMetrics" in payload
         assert "audioDurationMs" in payload["latencyMetrics"]
         assert "processingTimeMs" in payload["latencyMetrics"]
+
 
 
 class TestFasterWhisperInference:

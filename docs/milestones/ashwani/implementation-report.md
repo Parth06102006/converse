@@ -255,7 +255,7 @@ American Sign Language grammar is implemented via a deterministic rule compiler 
 
 The prototype sign vocabulary (`ml/translation/src/translation/fingerspelling.py`) is indexed via `PROTOTYPE_ASL_LEXICON`.
 
-- **Lexicon Scope**: Curated prototype vocabulary of ~120 high-frequency ASL concepts aligned with standard sign datasets (How2Sign / ASLG-PC12 core vocabularies).
+- **Lexicon Scope**: Manually curated prototype ASL lexicon of 123 basic concepts.
 - **Out-Of-Vocabulary (OOV) Decomposition**: When an English lemma is not in the prototype lexicon (e.g., proper names like `ALICE`, `ZACHARY`, technical terms), the engine decomposes the token into individual alphabetic fingerspelled signs:
   - Token: `ALICE` $\rightarrow$ Clips: `asl_fs_a_01`, `asl_fs_l_01`, `asl_fs_i_01`, `asl_fs_c_01`, `asl_fs_e_01`.
   - Timing: Fingerspelled letters have reduced hold duration (120ms vs 300ms standard) and tight co-articulation lead-in (30-96ms) to reflect human fingerspelling speed (~4 to 6 characters per second).
@@ -264,7 +264,7 @@ The prototype sign vocabulary (`ml/translation/src/translation/fingerspelling.py
 
 ## 10. Non-Manual Markers (NMM) Detection and Modeling
 
-Non-manual markers are grammatically obligatory facial gestures in ASL (`ml/translation/src/translation/nmm_detector.py`). The detector is a deterministic rule-based generator that maps clause type and sentiment into standard ARKit facial blendshape weights:
+Non-manual markers are grammatically obligatory facial gestures in ASL (`ml/translation/src/translation/nmm_detector.py`). The detector maps clause type and sentiment into deterministic animation blendshape target constants for the 3D avatar rig:
 
 | Sentence Category | Eyebrow Shape | Eyebrow Intensity | Head Motion | Pitch / Yaw | Mouth Shape |
 |---|---|---|---|---|---|
@@ -274,11 +274,11 @@ Non-manual markers are grammatically obligatory facial gestures in ASL (`ml/tran
 | **Topic Clause** | `raise` | 0.70 | `tilt_forward` | pitch: +0.08 | `neutral` |
 | **Assertion / SVO** | `neutral` | 0.00 | `neutral` | pitch: 0.00 | `neutral` |
 
-*Engineering Note*: Intensity parameters (e.g., 0.85) are deterministic blendshape target weights defined for the 3D avatar rendering rig; they are not learned neural weights.
+*Engineering Note*: Intensity parameters (e.g., 0.85) are deterministic animation blendshape target constants defined for the 3D avatar rendering rig; they are not learned neural weights.
 
 ---
 
-## 11. Discourse Spatial Loci and Anaphora Resolution
+## 11. Discourse Spatial Loci and Session-Aware Spatial Referent Allocation
 
 ASL establishes reference points (spatial loci) in 3D signing space to represent discourse entities (`ml/translation/src/translation/spatial_loci.py`).
 
@@ -289,11 +289,11 @@ ASL establishes reference points (spatial loci) in 3D signing space to represent
   - First entity (`ALICE`): `left` locus $(x=-0.30, y=0.0, z=0.40)$.
   - Second entity (`BOB`): `right` locus $(x=+0.30, y=0.0, z=0.40)$.
 
-### Session Referent Resolution
+### Session Referent Resolution Policy
 `SpatialLociTracker` maintains a session registry `_session_referents`:
-1. When a named entity or third-person noun is encountered, `assign_referent(name, session_id)` allocates the next available spatial coordinate.
-2. In subsequent mentions or pronominal references (`SHE`, `HE`, `THEY`), `resolve_locus_for_gloss()` retrieves the assigned 3D coordinate from the session registry.
-3. Pronouns correctly bind to the active discourse referent rather than defaulting to static neutral space.
+1. Only fingerspelled proper nouns or nouns (`pos in ("PROPN", "NOUN")`) trigger spatial locus allocation; arbitrary OOV verbs or adjectives do not consume loci.
+2. For third-person pronouns (`SHE`, `HE`), when exactly 1 referent exists in session, the pronoun binds to that assigned locus (`ALICE -> SHE`).
+3. When multiple referents exist in session without an explicit antecedent (`ALICE -> BOB -> SHE`), the tracker falls back to `neutral_space` to avoid false binding.
 
 ---
 
@@ -380,39 +380,39 @@ Benchmarks were executed on host hardware using `speech_sample_16k.wav` (10.435s
 ### 1. Silero VAD v5 ONNX Benchmark (`benchmark_asr.py`)
 - **Total Audio Processed**: 10.43 seconds (326 frames of 32ms / 512 samples each)
 - **Speech Frames Detected**: 291 / 326 (89.3%)
-- **Total Compute Time**: 0.0365 seconds
-- **Real-Time Factor (RTF)**: **0.003503** (Budget < 0.05)
-- **Mean Frame Latency**: **0.1115 ms**
-- **P95 Frame Latency**: **0.2020 ms**
-- **Max Frame Latency**: 0.5636 ms
+- **Total Compute Time**: 0.0347 seconds
+- **Real-Time Factor (RTF)**: **0.003325** (Budget < 0.05)
+- **Mean Frame Latency**: **0.1059 ms**
+- **P95 Frame Latency**: **0.1324 ms**
+- **Max Frame Latency**: 0.5984 ms
 
 ### 2. Faster-Whisper tiny.en INT8 Full Utterance Benchmark (`benchmark_asr.py`)
 - **Audio Duration**: 10.44 seconds
-- **Cold Start Latency** (Model init + first inference): 961.27 ms
-- **Mean Warm Inference Latency**: **406.30 ms**
-- **Warm Real-Time Factor (RTF)**: **0.0389** (Budget < 0.15)
+- **Cold Start Latency** (Model init + first inference): 989.02 ms
+- **Mean Warm Inference Latency**: **408.54 ms**
+- **Warm Real-Time Factor (RTF)**: **0.0392** (Budget < 0.15)
 - **Words Emitted**: 28 words
 - **Average Confidence**: 0.7396
 
 ### 3. Streaming ASR Engine Benchmark (`benchmark_asr.py`)
 - **Chunks Ingested**: 52 chunks (200ms each)
-- **Streaming RTF**: **0.2526** (Budget < 0.35)
-- **Mean Chunk Latency**: **45.05 ms** (Budget < 60.0 ms)
-- **P95 Chunk Latency**: 253.83 ms
-- **Utterance Flush Latency**: 283.17 ms
-- **Events Emitted**: 7 events
+- **Streaming RTF**: **0.2730** (Budget < 0.35)
+- **Mean Chunk Latency**: **47.38 ms** (Budget < 60.0 ms)
+- **P95 Chunk Latency**: 370.11 ms
+- **Utterance Flush Latency**: 373.76 ms
+- **Events Emitted**: 8 events
 
 ### 4. English-to-ASL Translation Compilation Benchmark (`evaluate_grammar.py`)
-- **Mean Compilation Latency**: **0.109 ms** (Budget < 15.0 ms)
-- **Max Compilation Latency**: 0.351 ms
-- **Test Suite Accuracy**: **10/10 (100.0%)**
+- **Mean Compilation Latency**: **0.113 ms** (Budget < 15.0 ms)
+- **Max Compilation Latency**: 0.342 ms
+- **Rule Regression Tests**: **10/10 passed**
 
 ### 5. End-to-End Pipeline Verification Benchmark (`benchmark_pipeline.py`)
 - **Audio Ingestion**: 1.0 second real speech slice in 200ms streaming chunks
 - **Transcribed Utterance**: *"He hoped."*
-- **Mean Chunk Latency**: **101.41 ms**
-- **Utterance Boundary Flush Latency**: **178.99 ms** (Budget < 350.0 ms)
-- **Translation Compilation**: **0.142 ms** (Budget < 15.0 ms)
+- **Mean Chunk Latency**: **69.76 ms** (Budget < 150.0 ms)
+- **Utterance Boundary Flush Latency**: **196.97 ms** (Budget < 350.0 ms)
+- **Translation Compilation**: **0.133 ms** (Budget < 15.0 ms)
 - **Schema Validation Errors**: **0 errors** (Strict contract compliance)
 
 ---
@@ -422,15 +422,15 @@ Benchmarks were executed on host hardware using `speech_sample_16k.wav` (10.435s
 Verification routines were executed across both Python ML packages and the TypeScript monorepo:
 
 ### Test Execution Summary
-1. `ml/asr`: **26 / 26 passed** in 2.06s (`uv run pytest`)
+1. `ml/asr`: **30 / 30 passed** in 2.56s (`uv run pytest`)
    - `test_asr.py`: Module exports and backend protocols.
-   - `test_vad.py`: Audio buffer decoding, polyphase resampling, Silero ONNX inference, hysteresis counters.
-   - `test_engine.py`: Faster-Whisper transcription, confidence calculation, word timestamps, streaming partials, silence flushes.
-2. `ml/translation`: **35 / 35 passed** in 0.05s (`uv run pytest`)
+   - `test_vad.py`: Audio buffer decoding, polyphase resampling, Silero ONNX inference, remainder buffering, hysteresis counters.
+   - `test_engine.py`: Faster-Whisper transcription, confidence calculation, word timestamps, streaming partials, silence flushes, production backend selection.
+2. `ml/translation`: **38 / 38 passed** in 0.05s (`uv run pytest`)
    - `test_grammar.py`: SVO, Wh-movement, negation, copula deletion, auxiliary elimination.
    - `test_nmm.py`: Eyebrow furrows/raises, head tilts/shakes, mouth shapes.
    - `test_timing.py`: Co-articulation timing, monotonicity, fingerspelling cadence.
-   - `test_spatial.py`: 3D coordinate locus binding, session referent resolution.
+   - `test_spatial.py`: 3D coordinate locus binding, session referent resolution policy, single and ambiguous anaphora binding, OOV verb locus exclusion.
    - `test_representation.py`: Schema validation against `@converse/contracts`.
    - `test_translation.py`: Pipeline integration.
 3. **Monorepo Quality Gate**:
@@ -453,4 +453,5 @@ Verification routines were executed across both Python ML packages and the TypeS
 
 1. **Lexicon Expansion**: The prototype lexicon contains ~120 core signs. Concepts outside this set fall back to alphabetic fingerspelling. A future expansion to 2,000+ signs using the complete WLASL dataset is planned.
 2. **Grammar Compiler**: The deterministic compiler handles standard question, negation, and declarative structures. Non-standard colloquial speech and complex embedded relative clauses require a dedicated neural sequence-to-sequence gloss translation model.
-3. **Hardware Acceleration**: CPU execution achieves an RTF of ~0.25 (4x faster than real time). Deploying ONNX Runtime with OpenVINO, TensorRT, or WebGPU will further decrease chunk latency to < 10ms.
+3. **Hardware Acceleration**: CPU execution achieves an RTF of ~0.27 (3.6x faster than real time). Deploying ONNX Runtime with OpenVINO, TensorRT, or WebGPU will further decrease chunk latency to < 10ms.
+4. **ASR Word Error Rate (WER) Evaluation**: WER was not measured in the current benchmark suite due to the lack of an annotated corpus transcript ground-truth paired with the LibriSpeech audio slice during runtime benchmarks. Latency, RTF, word-timestamp alignment, and streaming consistency were empirically verified, while systematic multi-speaker WER benchmarking remains for downstream corpus validation.

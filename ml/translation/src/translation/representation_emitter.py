@@ -153,9 +153,9 @@ class SignRepresentationEmitter:
                 lead_out_duration_ms=100.0,
             )
 
-            # Spatial locus resolution: if a named entity or fingerspelled proper noun is introduced,
-            # assign it an active 3D locus in the session discourse space
-            if tok.is_fingerspelled:
+            # Spatial locus resolution: only allocate spatial referents for plausible
+            # discourse entities / proper nouns (PROPN or NOUN), avoiding arbitrary OOV verbs/adjectives.
+            if tok.is_fingerspelled and tok.part_of_speech in ("PROPN", "NOUN"):
                 tracker.assign_referent(tok.gloss)
 
             spatial_target = tracker.resolve_locus_for_gloss(tok.gloss)

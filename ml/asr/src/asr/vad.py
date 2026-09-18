@@ -28,14 +28,14 @@ class VadConfig:
     """Configuration parameters for Voice Activity Detection."""
 
     sample_rate: int = 16000
-    frame_size_ms: int = 30  # Standard 30ms frame (480 samples @ 16kHz)
+    frame_size_ms: int = 32  # Standard 32ms frame (512 samples @ 16kHz for Silero ONNX)
     speech_threshold: float = 0.5  # Model probability threshold to declare speech
     energy_threshold: float = 0.012  # RMS threshold for acoustic heuristic fallback
     zcr_threshold: float = 0.35  # Max Zero Crossing Rate for heuristic fallback
     min_speech_duration_ms: int = 250  # Minimum active speech to lock utterance
     min_silence_duration_ms: int = 300  # Silence hangover threshold to trigger boundary
     speech_pad_ms: int = 60  # Pre/post padding
-    use_neural: bool = False  # Set True to use Silero ONNX model
+    use_neural: bool = True  # Production default using pretrained Silero ONNX model
 
 
 @dataclass(frozen=True)

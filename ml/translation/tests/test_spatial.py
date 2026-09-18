@@ -81,3 +81,51 @@ class TestSpatialLociTracker:
         bob_toks = [t for t in rep3.tokens if t.gloss in ("B", "O") or "bob" in t.token_id.lower()]
         assert len(bob_toks) > 0
         assert bob_toks[0].spatial_loci.target_offset.x == -0.30
+
+    def test_single_referent_anaphora_binding(self) -> None:
+        """ALICE -> SHE: unambiguous single referent in session binds directly to ALICE."""
+        from translation.pipeline import SpeechToSignPipeline
+
+        pipeline = SpeechToSignPipeline()
+        session_id = "single_referent_sess"
+
+        # Turn 1: Alice introduced
+        pipeline.translate("Alice arrived.", session_id=session_id)
+        # Turn 2: She refers to Alice
+        rep2 = pipeline.translate("She is happy.", session_id=session_id)
+        she_tok = next(t for t in rep2.tokens if t.gloss == "SHE")
+        assert she_tok.spatial_loci.target_offset.x == -0.30  # bound to Alice's 'left' locus
+
+    def test_multiple_referents_ambiguous_anaphora_fallback_neutral(self) -> None:
+        """ALICE -> BOB -> SHE: multiple referents without explicit antecedent falls back to neutral space."""
+        from translation.pipeline import SpeechToSignPipeline
+
+        pipeline = SpeechToSignPipeline()
+        session_id = "multi_referent_sess"
+
+        # Turn 1: Alice introduced -> left locus (-0.30)
+        pipeline.translate("Alice arrived.", session_id=session_id)
+        # Turn 2: Bob introduced -> right locus (+0.30)
+        pipeline.translate("Bob arrived.", session_id=session_id)
+        # Turn 3: "She is happy." -> multiple referents, ambiguous antecedent -> neutral_space
+        rep3 = pipeline.translate("She is happy.", session_id=session_id)
+        she_tok = next(t for t in rep3.tokens if t.gloss == "SHE")
+        assert she_tok.spatial_loci.anchor == "neutral_space"
+        assert she_tok.spatial_loci.target_offset.x == 0.0  # neutral space center, NOT Bob's right locus (+0.30)
+
+    def test_oov_verb_does_not_allocate_spatial_locus(self) -> None:
+        """OOV verb ('left') must NOT be allocated as a discourse referent in spatial tracker."""
+        from translation.pipeline import SpeechToSignPipeline
+
+        pipeline = SpeechToSignPipeline()
+        session_id = "oov_verb_sess"
+
+        rep = pipeline.translate("Alice left.", session_id=session_id)
+        assert len(rep.tokens) > 0
+        session_tracker = pipeline._session_trackers[session_id]
+
+        # Only ALICE should be a discourse referent; LEFT must NOT be registered
+        assert "ALICE" in session_tracker._session_referents
+        assert "LEFT" not in session_tracker._session_referents
+        assert len(session_tracker._session_referents) == 1
+

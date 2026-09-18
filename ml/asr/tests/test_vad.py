@@ -136,7 +136,7 @@ class TestVoiceActivityDetector:
     """Test Voice Activity Detection and utterance boundary triggers."""
 
     def test_silence_detection(self) -> None:
-        vad = VoiceActivityDetector(VadConfig(frame_size_ms=30, energy_threshold=0.015))
+        vad = VoiceActivityDetector(VadConfig(frame_size_ms=30, energy_threshold=0.015, use_neural=False))
         silence_frame = np.zeros(480, dtype=np.float32)
 
         res = vad.process_frame(silence_frame)
@@ -151,6 +151,7 @@ class TestVoiceActivityDetector:
                 frame_size_ms=30,
                 energy_threshold=0.012,
                 min_speech_duration_ms=100,
+                use_neural=False,
             )
         )
         speech_frame = create_sine_wave(350.0, 0.03, sample_rate=16000, amp=0.3)
@@ -169,6 +170,7 @@ class TestVoiceActivityDetector:
                 energy_threshold=0.012,
                 min_speech_duration_ms=90,
                 min_silence_duration_ms=120,
+                use_neural=False,
             )
         )
         speech_frame = create_sine_wave(350.0, 0.03, sample_rate=16000, amp=0.3)
@@ -192,13 +194,34 @@ class TestVoiceActivityDetector:
         assert final_silence.state == VadState.SILENCE
 
     def test_chunk_processing(self) -> None:
-        vad = VoiceActivityDetector(VadConfig(frame_size_ms=30))
+        vad = VoiceActivityDetector(VadConfig(frame_size_ms=30, use_neural=False))
         # 150ms chunk = 2400 samples -> should yield 5 frames of 480 samples each
         chunk = create_sine_wave(400.0, 0.15, sample_rate=16000, amp=0.25)
         results = vad.process_chunk(chunk)
 
         assert len(results) == 5
         assert all(r.is_speech for r in results)
+
+    def test_default_production_configuration_selects_silero(self) -> None:
+        detector = VoiceActivityDetector()
+        assert detector.config.use_neural is True
+        assert detector.config.frame_size_ms == 32
+        assert isinstance(detector.backend, SileroOnnxVadBackend)
+
+    def test_remainder_buffering_preserves_unaligned_samples(self) -> None:
+        detector = VoiceActivityDetector(VadConfig(frame_size_ms=32, use_neural=False))
+        # 512 samples per frame. Feed 600 samples.
+        chunk1 = np.ones(600, dtype=np.float32) * 0.1
+        results1 = detector.process_chunk(chunk1)
+        assert len(results1) == 1
+        assert len(detector._unprocessed_samples) == 88
+
+        # Feed 424 samples (88 + 424 = 512)
+        chunk2 = np.ones(424, dtype=np.float32) * 0.1
+        results2 = detector.process_chunk(chunk2)
+        assert len(results2) == 1
+        assert len(detector._unprocessed_samples) == 0
+
 
     def test_model_delegate_override(self) -> None:
         delegate_called = False
