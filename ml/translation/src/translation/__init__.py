@@ -22,6 +22,24 @@ from translation.nmm_detector import (
     NmmDetector,
     NonManualMarkers,
 )
+from translation.pipeline import (
+    SpeechToSignPipeline,
+)
+from translation.representation_emitter import (
+    HeadRotation,
+    InterpolationCurve,
+    NonManualMarkerDirectives,
+    SignRepresentation,
+    SignRepresentationEmitter,
+    SignRepresentationToken,
+)
+from translation.spatial_loci import (
+    LOCI_COORDINATES,
+    SpatialAnchor,
+    SpatialLociTarget,
+    SpatialLociTracker,
+    SpatialOffset,
+)
 from translation.timing_model import (
     SignTiming,
     TimingConfig,
@@ -30,6 +48,7 @@ from translation.timing_model import (
 
 __all__ = [
     "CANONICAL_ASL_LEXICON",
+    "LOCI_COORDINATES",
     "AslGlossToken",
     "EyebrowMarker",
     "FingerspellResolver",
@@ -39,10 +58,21 @@ __all__ = [
     "GrammarRuleCompiler",
     "GrammarTransformResult",
     "HeadMotionMarker",
+    "HeadRotation",
+    "InterpolationCurve",
     "NmmDetector",
+    "NonManualMarkerDirectives",
     "NonManualMarkers",
     "SentenceType",
+    "SignRepresentation",
+    "SignRepresentationEmitter",
+    "SignRepresentationToken",
     "SignTiming",
+    "SpatialAnchor",
+    "SpatialLociTarget",
+    "SpatialLociTracker",
+    "SpatialOffset",
+    "SpeechToSignPipeline",
     "TimingConfig",
     "TimingModel",
     "Token",

@@ -55,6 +55,8 @@ CANONICAL_ASL_LEXICON: set[str] = {
     # Common Verbs
     "GO",
     "COME",
+    "ARRIVE",
+    "LEAVE",
     "SEE",
     "LOOK",
     "KNOW",

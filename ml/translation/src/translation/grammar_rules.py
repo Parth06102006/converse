@@ -163,6 +163,9 @@ LEMMA_MAP: dict[str, str] = {
     "lived": "live",
     "lives": "live",
     "living": "live",
+    "arrived": "arrive",
+    "arrives": "arrive",
+    "arriving": "arrive",
 }
 
 
