@@ -1,0 +1,25 @@
+[project]
+name = "asr"
+version = "0.1.0"
+description = "Streaming Automatic Speech Recognition and VAD Engine"
+readme = "README.md"
+authors = [
+    { name = "Ashwani", email = "ashwani@converse.local" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "pytest>=8.0.0",
+    "numpy>=1.26.0",
+]
+
+[project.scripts]
+asr = "asr:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.8",
+]

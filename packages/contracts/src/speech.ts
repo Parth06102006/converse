@@ -12,6 +12,27 @@ export interface AsrResponse {
   durationMs: number;
 }
 
+export interface WordTimestamp {
+  word: string;
+  startMs: number;
+  endMs: number;
+}
+
+export interface AsrLatencyMetrics {
+  audioDurationMs: number;
+  processingTimeMs: number;
+}
+
+export interface AsrTranscriptEvent {
+  sessionId: string;
+  sequenceId: number;
+  text: string;
+  isFinal: boolean;
+  confidence: number;
+  wordTimestamps?: WordTimestamp[];
+  latencyMetrics: AsrLatencyMetrics;
+}
+
 export interface TtsRequest {
   text: string;
   voice?: string;
