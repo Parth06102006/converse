@@ -45,11 +45,7 @@ export interface AslGlossToken {
 }
 
 export type SpatialAnchor =
-  | "neutral_space"
-  | "chest"
-  | "forehead"
-  | "left_shoulder"
-  | "right_shoulder";
+  "neutral_space" | "chest" | "forehead" | "left_shoulder" | "right_shoulder";
 
 export type InterpolationCurve = "linear" | "ease_in_out" | "bezier_slerp";
 

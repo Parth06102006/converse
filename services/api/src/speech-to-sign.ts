@@ -53,9 +53,9 @@ function buildFallbackRepresentation(
         leadOutDurationMs: 100,
       },
       spatialLoci: {
-        anchor: (gloss === "ME" || gloss === "I" ? "chest" : "neutral_space") as
-          | "chest"
-          | "neutral_space",
+        anchor: (gloss === "ME" || gloss === "I"
+          ? "chest"
+          : "neutral_space") as "chest" | "neutral_space",
         targetOffset: {
           x: 0.0,
           y: 0.0,
@@ -65,8 +65,7 @@ function buildFallbackRepresentation(
       nonManualMarkers: {
         eyebrowIntensity: text.includes("?") ? 0.85 : 0.0,
         eyebrowShape: (text.includes("?") ? "furrow" : "neutral") as
-          | "furrow"
-          | "neutral",
+          "furrow" | "neutral",
         headRotation: { pitch: 0.0, yaw: 0.0, roll: 0.0 },
         mouthShape: "neutral",
       },
@@ -75,9 +74,7 @@ function buildFallbackRepresentation(
   });
 
   const totalDurationMs =
-    tokens.length > 0
-      ? tokens[tokens.length - 1]!.timing.startTimeMs + 520
-      : 0;
+    tokens.length > 0 ? tokens[tokens.length - 1]!.timing.startTimeMs + 520 : 0;
 
   return {
     version: "1.0.0",
@@ -105,15 +102,18 @@ export async function translateSpeechToSign(
   }
 
   try {
-    const response = await fetch(`${ML_SERVICE_URL}/internal/speech-to-sign/compile`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        englishText,
-        sessionId,
-      }),
-      signal: AbortSignal.timeout(1500),
-    });
+    const response = await fetch(
+      `${ML_SERVICE_URL}/internal/speech-to-sign/compile`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          englishText,
+          sessionId,
+        }),
+        signal: AbortSignal.timeout(1500),
+      },
+    );
 
     if (response.ok) {
       const body = (await response.json()) as MlServiceCompileResponse;
@@ -127,7 +127,10 @@ export async function translateSpeechToSign(
             t.timing.leadOutDurationMs,
         }));
 
-        const eyebrowMap: Record<"furrow" | "raise" | "neutral", "furrowed" | "raised" | "neutral"> = {
+        const eyebrowMap: Record<
+          "furrow" | "raise" | "neutral",
+          "furrowed" | "raised" | "neutral"
+        > = {
           furrow: "furrowed",
           raise: "raised",
           neutral: "neutral",

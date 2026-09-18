@@ -5,6 +5,7 @@
 This document specifies the authoritative data contracts, interface definitions, error handling semantics, and validation invariants for the Converse communication platform. Converse provides bidirectional real-time translation between American Sign Language (ASL) and spoken English.
 
 The contracts defined herein govern all interactions across system boundaries:
+
 1. Client applications (Web, Chrome Extension, Mobile) interacting with backend gateway services.
 2. Inter-service remote procedure calls between the Node.js API gateway and Python ML inference microservices.
 3. Real-time event streams transmitted over WebSocket connections and WebRTC data channels.
@@ -18,6 +19,7 @@ Adherence to these contracts ensures that model engineers, backend service devel
 ### 2.1 Separation of Logical Capabilities and Physical Topology
 
 Logical component boundaries do not dictate physical deployment boundaries. The system exposes five logical capabilities:
+
 1. **ASL Vision**: Extracts 3D spatial landmarks and classifies temporal sign sequences from video frames.
 2. **ASR (Automatic Speech Recognition)**: Transcribes streaming or buffered audio into natural English text.
 3. **Translation Engine**: Performs bidirectional translation between ASL representations (gloss sequences, spatial tokens) and grammatical English text.
@@ -31,6 +33,7 @@ In monolithic local development, all capabilities may execute on a single host. 
 The Converse engine operates along two primary communication axes:
 
 #### Sign-to-Speech Pipeline
+
 ```text
 Camera
   │
@@ -57,6 +60,7 @@ Audio Stream
 ```
 
 #### Speech-to-Sign Pipeline
+
 ```text
 Microphone
   │
@@ -85,6 +89,7 @@ Visual Sign Output
 ### 2.3 Partial Versus Final Results
 
 Real-time human conversation cannot tolerate end-of-utterance batch latency. The contracts therefore distinguish between:
+
 - **Partial results (`status: "partial"`, `isFinal: false`)**: Ephemeral, speculative hypotheses emitted as audio chunks or video frames arrive. Downstream stages use partials for predictive pre-warming and speculative translation. Clients display partials with visual distinction.
 - **Final results (`status: "final"`, `isFinal: true`)**: Authoritative, committed segments produced when an acoustic pause or gestural rest is detected. Downstream stages commit translations and trigger permanent audio synthesis.
 
@@ -97,6 +102,7 @@ To eliminate unhandled runtime exceptions, inconsistent null values, and silent 
 ### 3.1 Type Definitions
 
 #### Result Type
+
 A discriminated union that forces the caller to explicitly handle success and failure paths:
 
 ```ts
@@ -106,12 +112,12 @@ export type Result<T, E = DomainError> =
 ```
 
 #### Option Type
+
 A discriminated union that represents the explicit presence or absence of a value without ambiguous `null` or `undefined` semantics:
 
 ```ts
 export type Option<T> =
-  | { readonly some: true; readonly value: T }
-  | { readonly some: false };
+  { readonly some: true; readonly value: T } | { readonly some: false };
 ```
 
 ### 3.2 Constructor Helpers
@@ -160,26 +166,26 @@ export interface DomainError {
 
 ### 3.4 Standard Error Codes Catalog
 
-| Component | Code | Recoverable | Description | Client Action |
-|---|---|---|---|---|
-| `camera` | `DEVICE_NOT_FOUND` | false | No video capture device accessible | Prompt user to connect camera |
-| `camera` | `PERMISSION_DENIED` | false | OS or browser denied camera permission | Prompt user to grant permission |
-| `vision` | `NO_PERSON_DETECTED` | true | Pose detection found zero subjects | Prompt user to stand in front of camera |
-| `vision` | `HANDS_OUT_OF_BOUNDS` | true | Hands exit camera capture frustum | Display guide box overlay |
-| `vision` | `LOW_DETECTION_CONFIDENCE` | true | Landmark confidence below operational threshold | Suggest improving room lighting |
-| `vision` | `MODEL_INFERENCE_TIMEOUT` | true | Vision inference deadline exceeded | Drop intermediate frame and continue |
-| `asr` | `AUDIO_BUFFER_OVERFLOW` | true | Ingestion rate exceeds processing capacity | Apply client-side throttling |
-| `asr` | `UNSUPPORTED_AUDIO_FORMAT` | false | Audio codec or sample rate unsupported | Reconfigure capture settings to 16kHz mono |
-| `asr` | `SPEECH_ININTEL` | true | Speech signal indistinct or masked by noise | Prompt speaker to speak clearly |
-| `translation` | `OUT_OF_VOCABULARY` | true | Sign gloss or English word not in lexicon | Fall back to finger-spelling or nearest synonym |
-| `translation` | `CONTEXT_WINDOW_EXCEEDED` | true | Conversation context buffer full | Prune oldest context turns |
-| `translation` | `TRANSLATION_TIMEOUT` | true | Translation model latency threshold exceeded | Emit fallback literal gloss match |
-| `tts` | `VOICE_NOT_FOUND` | true | Requested TTS voice profile unavailable | Fall back to default system voice |
-| `tts` | `SYNTHESIS_FAILED` | true | Synthesis engine failure | Re-request synthesis with plain text |
-| `renderer` | `AVATAR_LOAD_FAILED` | false | 3D model assets failed to initialize | Fall back to 2D skeleton rendering |
-| `protocol` | `SESSION_EXPIRED` | false | WebSocket session idle timeout reached | Re-initialize session via `session_init` |
-| `protocol` | `MALFORMED_FRAME` | true | Inbound payload failed schema validation | Log warning and discard packet |
-| `protocol` | `RATE_LIMIT_EXCEEDED` | true | Client exceeds allowable frame/audio rate | Back off transmission rate |
+| Component     | Code                       | Recoverable | Description                                     | Client Action                                   |
+| ------------- | -------------------------- | ----------- | ----------------------------------------------- | ----------------------------------------------- |
+| `camera`      | `DEVICE_NOT_FOUND`         | false       | No video capture device accessible              | Prompt user to connect camera                   |
+| `camera`      | `PERMISSION_DENIED`        | false       | OS or browser denied camera permission          | Prompt user to grant permission                 |
+| `vision`      | `NO_PERSON_DETECTED`       | true        | Pose detection found zero subjects              | Prompt user to stand in front of camera         |
+| `vision`      | `HANDS_OUT_OF_BOUNDS`      | true        | Hands exit camera capture frustum               | Display guide box overlay                       |
+| `vision`      | `LOW_DETECTION_CONFIDENCE` | true        | Landmark confidence below operational threshold | Suggest improving room lighting                 |
+| `vision`      | `MODEL_INFERENCE_TIMEOUT`  | true        | Vision inference deadline exceeded              | Drop intermediate frame and continue            |
+| `asr`         | `AUDIO_BUFFER_OVERFLOW`    | true        | Ingestion rate exceeds processing capacity      | Apply client-side throttling                    |
+| `asr`         | `UNSUPPORTED_AUDIO_FORMAT` | false       | Audio codec or sample rate unsupported          | Reconfigure capture settings to 16kHz mono      |
+| `asr`         | `SPEECH_ININTEL`           | true        | Speech signal indistinct or masked by noise     | Prompt speaker to speak clearly                 |
+| `translation` | `OUT_OF_VOCABULARY`        | true        | Sign gloss or English word not in lexicon       | Fall back to finger-spelling or nearest synonym |
+| `translation` | `CONTEXT_WINDOW_EXCEEDED`  | true        | Conversation context buffer full                | Prune oldest context turns                      |
+| `translation` | `TRANSLATION_TIMEOUT`      | true        | Translation model latency threshold exceeded    | Emit fallback literal gloss match               |
+| `tts`         | `VOICE_NOT_FOUND`          | true        | Requested TTS voice profile unavailable         | Fall back to default system voice               |
+| `tts`         | `SYNTHESIS_FAILED`         | true        | Synthesis engine failure                        | Re-request synthesis with plain text            |
+| `renderer`    | `AVATAR_LOAD_FAILED`       | false       | 3D model assets failed to initialize            | Fall back to 2D skeleton rendering              |
+| `protocol`    | `SESSION_EXPIRED`          | false       | WebSocket session idle timeout reached          | Re-initialize session via `session_init`        |
+| `protocol`    | `MALFORMED_FRAME`          | true        | Inbound payload failed schema validation        | Log warning and discard packet                  |
+| `protocol`    | `RATE_LIMIT_EXCEEDED`      | true        | Client exceeds allowable frame/audio rate       | Back off transmission rate                      |
 
 ### 3.5 Cross-Language Result Mapping
 
@@ -262,6 +268,7 @@ export interface SignDetection {
 ```
 
 #### Coordinate System Invariant
+
 All `x` and `y` coordinates in `Point3D` are normalized floats in the range `[0.0, 1.0]`, relative to image width and height. Origin `(0.0, 0.0)` is the top-left corner of the frame. Coordinate `z` represents depth relative to the wrist or mid-hip landmark, scaled identically to `x`.
 
 ### 4.2 Sign Representation and Translation Schemas
@@ -271,6 +278,61 @@ export interface SignToken {
   gloss: string;
   durationMs: number;
   emphasis?: boolean;
+}
+
+export interface NonManualMarkers {
+  eyebrows: "neutral" | "raised" | "furrowed";
+  headMotion: "neutral" | "nod" | "shake" | "tilt_forward";
+  mouthMorpheme?: string;
+}
+
+export interface AslGlossToken {
+  gloss: string;
+  lemma: string;
+  partOfSpeech: string;
+  nonManualMarkers: NonManualMarkers;
+  spatialLocus?: "neutral_space" | "chest" | "forehead" | "left" | "right";
+  isFingerspelled: boolean;
+  fingerspellSequence?: string[];
+}
+
+export interface SignTokenTiming {
+  startTimeMs: number;
+  leadInDurationMs: number;
+  holdDurationMs: number;
+  leadOutDurationMs: number;
+}
+
+export interface SpatialLociTarget {
+  anchor: "neutral_space" | "chest" | "forehead" | "left" | "right";
+  targetOffset: Point3D;
+}
+
+export interface SignRepresentationToken {
+  tokenId: string;
+  clipId: string;
+  gloss: string;
+  timing: SignTokenTiming;
+  spatialLoci: SpatialLociTarget;
+  nonManualMarkers: {
+    eyebrowIntensity: number;
+    eyebrowShape: "furrow" | "raise" | "neutral";
+    headRotation: {
+      pitch: number;
+      yaw: number;
+      roll: number;
+    };
+    mouthShape: string;
+  };
+  interpolationCurve: "linear" | "ease_in_out" | "bezier_slerp";
+}
+
+export interface SignRepresentation {
+  version: string;
+  sessionId: string;
+  utteranceId: string;
+  totalDurationMs: number;
+  tokens: SignRepresentationToken[];
 }
 
 export interface SignToTextRequest {
@@ -293,6 +355,8 @@ export interface TextToSignRequest {
 
 export interface TextToSignResponse {
   tokens: SignToken[];
+  aslTokens?: AslGlossToken[];
+  representation?: SignRepresentation;
   totalDurationMs: number;
   latencyMs: number;
 }
@@ -301,9 +365,31 @@ export interface TextToSignResponse {
 ### 4.3 Speech and Audio Schemas
 
 ```ts
+export interface WordTimestamp {
+  word: string;
+  startMs: number;
+  endMs: number;
+  confidence?: number;
+}
+
+export interface AsrLatencyMetrics {
+  audioDurationMs: number;
+  processingTimeMs: number;
+}
+
+export interface AsrTranscriptEvent {
+  sessionId: string;
+  sequenceId: number;
+  text: string;
+  isFinal: boolean;
+  confidence: number;
+  wordTimestamps?: WordTimestamp[];
+  latencyMetrics: AsrLatencyMetrics;
+}
+
 export interface AsrRequest {
   audioBase64?: string;
-  audioFormat?: "wav" | "webm" | "pcm";
+  audioFormat?: "wav" | "webm" | "pcm" | "pcm_s16le";
   sampleRate?: number;
   sessionId?: string;
 }
@@ -329,7 +415,9 @@ export interface TtsResponse {
 ```
 
 #### Audio Canonical Standard
+
 The canonical uncompressed internal audio representation across Converse is:
+
 - **Encoding**: Signed 16-bit linear PCM (`pcm_s16le`)
 - **Sample Rate**: 16,000 Hz
 - **Channels**: 1 (Mono)
@@ -373,12 +461,14 @@ export interface ServiceCatalogResponse {
 Base URL: `http://<host>:<port>`
 
 Standard Headers:
+
 - `Content-Type: application/json`
 - `Accept: application/json`
 - `X-Session-ID`: Optional string identifier associating request with ongoing conversation session.
 - `X-Request-ID`: UUID for distributed request tracing.
 
 Standard Error Response Envelope:
+
 ```json
 {
   "ok": false,
@@ -408,6 +498,7 @@ Probes runtime availability, component status, and operational uptime.
 - **Response Type**: `HealthCheckResponse`
 
 #### Response Example
+
 ```json
 {
   "status": "ok",
@@ -431,6 +522,7 @@ Returns the service catalog, architecture description, active pipelines, and sup
 - **Response Type**: `ServiceCatalogResponse`
 
 #### Response Example
+
 ```json
 {
   "name": "Converse API",
@@ -487,13 +579,15 @@ Translates a sequence of recognized ASL sign detections into grammatical English
 - **Response Type**: `SignToTextResponse`
 
 #### Request Schema
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `detections` | `SignDetection[]` | Yes | Ordered array of recognized sign glosses with timing boundaries |
-| `sessionId` | `string` | No | Identifier for conversational context retention |
-| `context` | `string` | No | Optional prior turn dialogue context for disambiguation |
+
+| Field        | Type              | Required | Description                                                     |
+| ------------ | ----------------- | -------- | --------------------------------------------------------------- |
+| `detections` | `SignDetection[]` | Yes      | Ordered array of recognized sign glosses with timing boundaries |
+| `sessionId`  | `string`          | No       | Identifier for conversational context retention                 |
+| `context`    | `string`          | No       | Optional prior turn dialogue context for disambiguation         |
 
 #### Request Example
+
 ```json
 {
   "sessionId": "sess_8f9a2b",
@@ -516,6 +610,7 @@ Translates a sequence of recognized ASL sign detections into grammatical English
 ```
 
 #### Response Example
+
 ```json
 {
   "englishText": "Where is the store?",
@@ -537,12 +632,14 @@ Translates English text into grammatical ASL sign tokens with duration and timin
 - **Response Type**: `TextToSignResponse`
 
 #### Request Schema
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `englishText` | `string` | Yes | The natural language English text to translate |
-| `sessionId` | `string` | No | Conversation session identifier |
+
+| Field         | Type     | Required | Description                                    |
+| ------------- | -------- | -------- | ---------------------------------------------- |
+| `englishText` | `string` | Yes      | The natural language English text to translate |
+| `sessionId`   | `string` | No       | Conversation session identifier                |
 
 #### Request Example
+
 ```json
 {
   "sessionId": "sess_8f9a2b",
@@ -551,6 +648,7 @@ Translates English text into grammatical ASL sign tokens with duration and timin
 ```
 
 #### Response Example
+
 ```json
 {
   "tokens": [
@@ -587,14 +685,16 @@ Transcribes an audio chunk or complete utterance into text.
 - **Response Type**: `AsrResponse`
 
 #### Request Schema
-| Field | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `audioBase64` | `string` | Yes | None | Base64-encoded audio byte buffer |
-| `audioFormat` | `string` | No | `"pcm"` | One of `"wav"`, `"webm"`, `"pcm"` |
-| `sampleRate` | `number` | No | `16000` | Sample frequency in Hz (typically 16000) |
-| `sessionId` | `string` | No | None | Tracking session identifier |
+
+| Field         | Type     | Required | Default | Description                              |
+| ------------- | -------- | -------- | ------- | ---------------------------------------- |
+| `audioBase64` | `string` | Yes      | None    | Base64-encoded audio byte buffer         |
+| `audioFormat` | `string` | No       | `"pcm"` | One of `"wav"`, `"webm"`, `"pcm"`        |
+| `sampleRate`  | `number` | No       | `16000` | Sample frequency in Hz (typically 16000) |
+| `sessionId`   | `string` | No       | None    | Tracking session identifier              |
 
 #### Request Example
+
 ```json
 {
   "sessionId": "sess_8f9a2b",
@@ -605,6 +705,7 @@ Transcribes an audio chunk or complete utterance into text.
 ```
 
 #### Response Example
+
 ```json
 {
   "transcript": "Where are you going?",
@@ -626,13 +727,15 @@ Synthesizes spoken audio from English text.
 - **Response Type**: `TtsResponse`
 
 #### Request Schema
-| Field | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `text` | `string` | Yes | None | The English sentence to synthesize |
-| `voice` | `string` | No | `"default-neutral"` | Selected voice identifier |
-| `speed` | `number` | No | `1.0` | Playback rate multiplier (0.5 to 2.0) |
+
+| Field   | Type     | Required | Default             | Description                           |
+| ------- | -------- | -------- | ------------------- | ------------------------------------- |
+| `text`  | `string` | Yes      | None                | The English sentence to synthesize    |
+| `voice` | `string` | No       | `"default-neutral"` | Selected voice identifier             |
+| `speed` | `number` | No       | `1.0`               | Playback rate multiplier (0.5 to 2.0) |
 
 #### Request Example
+
 ```json
 {
   "text": "Hello, how can I assist you today?",
@@ -642,6 +745,7 @@ Synthesizes spoken audio from English text.
 ```
 
 #### Response Example
+
 ```json
 {
   "audioBase64": "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=",
@@ -657,6 +761,7 @@ Synthesizes spoken audio from English text.
 ### 6.1 Versioning Policy
 
 All schemas in `@converse/contracts` follow Semantic Versioning (`MAJOR.MINOR.PATCH`):
+
 - **PATCH**: Non-breaking internal adjustments, documentation enhancements, tightening of internal types without modifying wire format.
 - **MINOR**: Additive changes to contracts. Adding optional fields with sensible defaults, adding new event types to union types, or exposing new optional endpoints. Backward compatibility is strictly maintained.
 - **MAJOR**: Breaking changes. Renaming required fields, changing coordinate normalization formulas, removing event types, or altering serialization formats.
@@ -666,6 +771,7 @@ API endpoints are namespaced with version indicators when breaking changes are d
 ### 6.2 Additive Evolution Rules
 
 To maintain backward compatibility between differing versions of web clients, mobile apps, and backend services:
+
 1. **Never rename or delete fields in minor versions**: If `englishText` is established, it cannot be renamed to `text` without supporting both simultaneously during a documented deprecation window.
 2. **All newly introduced fields must be optional**: New fields must specify sensible default fallback values when omitted by older clients.
 3. **Clients must ignore unrecognized fields**: Clients and servers must implement open record parsing (non-strict field stripping) to permit forward-compatible extensions.
@@ -675,6 +781,7 @@ To maintain backward compatibility between differing versions of web clients, mo
 TypeScript types exist solely at compile-time. To prevent invalid payloads from breaching system boundaries at runtime, all inputs must be validated against schema validators before processing.
 
 #### Zod Validation (Node.js API Gateway)
+
 ```ts
 import { z } from "zod";
 
@@ -706,6 +813,7 @@ export const SignToTextRequestSchema = z.object({
 ```
 
 #### Pydantic Validation (Python ML Services)
+
 ```python
 from typing import List, Optional
 from pydantic import BaseModel, Field

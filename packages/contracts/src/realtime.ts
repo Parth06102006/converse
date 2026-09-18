@@ -1,5 +1,9 @@
 import type { DomainError } from "./result.js";
-import type { AslGlossToken, SignRepresentation, SignToken } from "./translation.js";
+import type {
+  AslGlossToken,
+  SignRepresentation,
+  SignToken,
+} from "./translation.js";
 import type { FrameLandmarks, SignDetection } from "./vision.js";
 
 export type RealtimeDirection = "sign_to_speech" | "speech_to_sign";

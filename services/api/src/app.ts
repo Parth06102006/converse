@@ -9,10 +9,7 @@ import type {
   TextToSignRequest,
   TextToSignResponse,
 } from "@converse/contracts";
-import {
-  transcribeSpeech,
-  translateSpeechToSign,
-} from "./speech-to-sign.js";
+import { transcribeSpeech, translateSpeechToSign } from "./speech-to-sign.js";
 
 export function createApp(): Express {
   const app: Express = express();
