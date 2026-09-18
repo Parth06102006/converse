@@ -11,8 +11,9 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "asr" / "src"))
 sys.path.insert(0, str(ROOT / "translation" / "src"))
 
-from asr.engine import StreamingAsrEngine
 from translation.pipeline import SpeechToSignPipeline
+
+from asr.engine import StreamingAsrEngine
 
 
 class ModelServiceHandler(BaseHTTPRequestHandler):
