@@ -1,10 +1,25 @@
-"""Out-of-Vocabulary (OOV) detection and fingerspelling decomposition."""
+"""Out-of-Vocabulary (OOV) detection and fingerspelling decomposition.
+
+Linguistic Policy & Scope:
+- This module uses a curated prototype core lexicon (PROTOTYPE_ASL_LEXICON)
+  derived from high-frequency core concepts in How2Sign and ASLG-PC12 corpora.
+- Scope: ~120 basic vocabulary items (pronouns, question words, time markers,
+  common verbs, and common objects).
+- Limitations: Does not cover the comprehensive ASL lexicon, regional variations,
+  or classifier predicates.
+- MVP OOV Policy: In this system, any token absent from the prototype lexicon
+  is decomposed into a sequence of fingerspelling tokens. In natural ASL,
+  unmapped concepts may be conveyed via loan signs, classifiers, or
+  circumlocution; character-by-character fingerspelling is a deliberate
+  engineering fallback to ensure every English word remains renderable by
+  the downstream 3D avatar engine.
+"""
 
 import re
 from dataclasses import dataclass
 
-# Canonical baseline vocabulary of common ASL signs
-CANONICAL_ASL_LEXICON: set[str] = {
+# Curated prototype vocabulary of core ASL signs
+PROTOTYPE_ASL_LEXICON: set[str] = {
     # Pronouns & Pointing
     "ME",
     "I",
@@ -162,6 +177,9 @@ CANONICAL_ASL_LEXICON: set[str] = {
     "SORRY",
     "AGAIN",
 }
+
+# Backward compatibility alias
+CANONICAL_ASL_LEXICON = PROTOTYPE_ASL_LEXICON
 
 
 @dataclass(frozen=True)

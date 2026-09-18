@@ -1,4 +1,15 @@
-"""Non-Manual Marker (NMM) classifier for ASL facial and head grammatical cues."""
+"""Rule-based Non-Manual Marker (NMM) generator for ASL facial and head grammatical cues.
+
+Design & Architectural Honesty:
+- This module implements deterministic linguistic rules that map grammatical
+  sentence mood (Wh-questions, Yes/No questions, sentential negation) and lexical
+  adjectives to facial and head gesture markers.
+- It is NOT a trained statistical or neural classifier; it is a deterministic
+  rule-based generator.
+- Numerical animation values (e.g. 0.85 for eyebrow furrow intensity, 0.80 for raise,
+  and head rotation angles) are calibrated engineering constants designed to drive
+  the downstream 3D avatar blendshape controller, not empirically learned values.
+"""
 
 from dataclasses import dataclass
 from typing import ClassVar, Literal
@@ -28,7 +39,7 @@ class NonManualMarkers:
 
 
 class NmmDetector:
-    """Classifies non-manual markers based on grammatical sentence type and lexical cues."""
+    """Deterministic rule-based generator for non-manual markers (NMMs)."""
 
     # Lexical mouth morpheme mapping
     MOUTH_MORPHEMES: ClassVar[dict[str, str]] = {

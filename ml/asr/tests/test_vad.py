@@ -3,9 +3,11 @@
 import base64
 import io
 import wave
+from pathlib import Path
 
 import numpy as np
 import pytest
+import soundfile as sf
 
 from asr.buffer import (
     SlidingAudioBuffer,
@@ -13,6 +15,7 @@ from asr.buffer import (
     resample_to_16k,
 )
 from asr.vad import (
+    SileroOnnxVadBackend,
     VadConfig,
     VadState,
     VoiceActivityDetector,
@@ -212,3 +215,40 @@ class TestVoiceActivityDetector:
         assert delegate_called
         assert res.is_speech
         assert res.speech_probability == 0.95
+
+
+class TestSileroVad:
+    """Model-backed integration tests for pretrained Silero VAD ONNX model."""
+
+    def test_silero_onnx_backend_real_speech(self) -> None:
+        audio_path = Path(__file__).resolve().parent / "data" / "speech_sample_16k.wav"
+        if not audio_path.exists():
+            pytest.skip("speech_sample_16k.wav not found")
+
+        data, sr = sf.read(str(audio_path))
+        backend = SileroOnnxVadBackend()
+
+        probs: list[float] = []
+        for i in range(0, min(len(data), 16000 * 3), 512):
+            chunk = data[i : i + 512]
+            if len(chunk) < 512:
+                break
+            probs.append(backend.predict_probability(chunk, sr))
+
+        assert len(probs) > 0
+        assert max(probs) > 0.90, f"Expected peak speech probability > 0.90, got {max(probs)}"
+        assert any(p < 0.10 for p in probs[:5]), "Expected initial non-speech to have low probability"
+
+    def test_silero_vad_detector_integration(self) -> None:
+        audio_path = Path(__file__).resolve().parent / "data" / "speech_sample_16k.wav"
+        if not audio_path.exists():
+            pytest.skip("speech_sample_16k.wav not found")
+
+        data, _sr = sf.read(str(audio_path))
+        vad = VoiceActivityDetector(config=VadConfig(frame_size_ms=32, use_neural=True))
+
+        results = vad.process_chunk(data[: 16000 * 3])
+        assert len(results) > 0
+        # Check that speech was detected and locked
+        assert any(r.state == VadState.SPEECH for r in results)
+        assert any(r.speech_probability > 0.85 for r in results)

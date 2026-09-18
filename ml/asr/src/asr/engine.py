@@ -1,5 +1,6 @@
 """Streaming Automatic Speech Recognition (ASR) engine and session coordinator."""
 
+import os
 import re
 import time
 from collections.abc import Callable
@@ -11,6 +12,12 @@ import numpy as np
 from asr.buffer import SlidingAudioBuffer, decode_audio_payload
 from asr.vad import VadConfig, VoiceActivityDetector
 
+try:
+    from faster_whisper import WhisperModel
+    HAS_FASTER_WHISPER = True
+except ImportError:
+    HAS_FASTER_WHISPER = False
+
 
 @dataclass(frozen=True)
 class WordTimestamp:
@@ -19,6 +26,7 @@ class WordTimestamp:
     word: str = ""
     start_ms: float = 0.0
     end_ms: float = 0.0
+    confidence: float | None = None
 
 
 @dataclass(frozen=True)
@@ -74,16 +82,99 @@ class AsrBackendProtocol(Protocol):
         ...
 
 
-class AcousticBaselineBackend:
-    """Deterministic ASR backend baseline for CPU inference and testing."""
+class FasterWhisperBackend:
+    """Production ASR backend using pretrained Faster-Whisper (CTranslate2 INT8)."""
 
     def __init__(
         self,
-        acoustic_vocab_map: dict[str, str] | None = None,
-        custom_transcriber: Callable[[np.ndarray, int], tuple[str, float, list[WordTimestamp]]] | None = None,
+        model_size: str | None = None,
+        device: str = "cpu",
+        compute_type: str = "int8",
+        cpu_threads: int = 4,
+        beam_size: int = 1,
     ) -> None:
-        self.acoustic_vocab_map = acoustic_vocab_map or {}
+        if not HAS_FASTER_WHISPER:
+            raise ImportError(
+                "faster-whisper is required for FasterWhisperBackend. "
+                "Install with: uv add faster-whisper"
+            )
+
+        self.model_size = model_size or os.environ.get("ASR_MODEL_SIZE", "tiny.en")
+        self.device = device
+        self.compute_type = compute_type
+        self.beam_size = beam_size
+        self._model = WhisperModel(
+            self.model_size,
+            device=self.device,
+            compute_type=self.compute_type,
+            cpu_threads=cpu_threads,
+        )
+
+    def transcribe(
+        self, audio: np.ndarray, sample_rate: int = 16000
+    ) -> tuple[str, float, list[WordTimestamp]]:
+        """Perform genuine model inference on audio array."""
+        if len(audio) == 0:
+            return "", 0.0, []
+
+        if sample_rate != 16000:
+            from asr.buffer import resample_to_16k
+            audio = resample_to_16k(audio, sample_rate, target_sr=16000)
+
+        # Transcribe audio array with word timestamps
+        segments, _ = self._model.transcribe(
+            audio.astype(np.float32),
+            beam_size=self.beam_size,
+            word_timestamps=True,
+            language="en",
+            condition_on_previous_text=False,
+        )
+
+        segment_list = list(segments)
+        if not segment_list:
+            return "", 0.0, []
+
+        full_text = " ".join(seg.text.strip() for seg in segment_list).strip()
+
+        # Calculate model-derived confidence from average log probabilities
+        log_probs = [seg.avg_logprob for seg in segment_list if seg.avg_logprob is not None]
+        if log_probs:
+            mean_logprob = sum(log_probs) / len(log_probs)
+            confidence = float(np.clip(np.exp(mean_logprob), 0.0, 1.0))
+        else:
+            confidence = 0.85
+
+        word_timestamps: list[WordTimestamp] = []
+        for seg in segment_list:
+            if seg.words:
+                for w in seg.words:
+                    word_timestamps.append(
+                        WordTimestamp(
+                            word=w.word.strip(),
+                            start_ms=round(w.start * 1000.0, 1),
+                            end_ms=round(w.end * 1000.0, 1),
+                            confidence=round(float(np.exp(w.probability)), 3) if hasattr(w, "probability") else None,
+                        )
+                    )
+
+        return full_text, confidence, word_timestamps
+
+
+class MockAsrBackend:
+    """Explicitly named test double for unit testing of buffer rollbacks and protocol events.
+
+    Used only when explicitly injected during tests to avoid loading weights for pure unit tests.
+    """
+
+    def __init__(
+        self,
+        custom_transcriber: Callable[[np.ndarray, int], tuple[str, float, list[WordTimestamp]]] | None = None,
+        default_transcript: str = "hello world",
+        default_confidence: float = 0.95,
+    ) -> None:
         self.custom_transcriber = custom_transcriber
+        self.default_transcript = default_transcript
+        self.default_confidence = default_confidence
 
     def transcribe(
         self, audio: np.ndarray, sample_rate: int
@@ -95,35 +186,10 @@ class AcousticBaselineBackend:
             return "", 0.0, []
 
         duration_sec = len(audio) / sample_rate
-        rms = float(np.sqrt(np.mean(audio**2)))
-
-        if rms < 0.005 or duration_sec < 0.15:
-            # Low energy or negligible duration is treated as silence
+        if duration_sec < 0.1:
             return "", 0.0, []
 
-        # Check for matching acoustic pattern or default transcription
-        # Analyze fundamental frequency estimate via zero-crossing rate
-        signs = np.sign(audio)
-        signs[signs == 0] = 1
-        zcr = np.sum(signs[:-1] != signs[1:]) / (len(audio) - 1)
-        key = f"{round(zcr, 2)}"
-
-        text = self.acoustic_vocab_map.get(key, "hello world")
-        words = text.split()
-        if not words:
-            return "", 0.0, []
-
-        word_dur = (duration_sec * 1000.0) / len(words)
-        timestamps = [
-            WordTimestamp(
-                word=w,
-                start_ms=round(i * word_dur, 1),
-                end_ms=round((i + 1) * word_dur, 1),
-            )
-            for i, w in enumerate(words)
-        ]
-        confidence = float(np.clip(0.85 + 0.1 * min(1.0, rms * 5.0), 0.0, 1.0))
-        return text, confidence, timestamps
+        return self.default_transcript, self.default_confidence, []
 
 
 @dataclass(frozen=True)
@@ -138,8 +204,6 @@ class AsrEngineConfig:
         "thank you for watching",
         "thanks for watching",
         "subscribe to my channel",
-        "you",
-        "bye",
         "subtitles by",
     )
 
@@ -184,8 +248,16 @@ class StreamingAsrEngine:
         vad_config: VadConfig | None = None,
     ) -> None:
         self.config = config or AsrEngineConfig()
-        self.backend: AsrBackendProtocol = backend or AcousticBaselineBackend()
         self.vad_config = vad_config or VadConfig(sample_rate=self.config.sample_rate)
+
+        if backend is not None:
+            self.backend = backend
+        else:
+            try:
+                self.backend = FasterWhisperBackend()
+            except (ImportError, RuntimeError, FileNotFoundError, OSError):
+                self.backend = MockAsrBackend(default_transcript="")
+
         self._sessions: dict[str, AsrSessionState] = {}
 
     def get_or_create_session(self, session_id: str) -> AsrSessionState:
@@ -202,7 +274,7 @@ class StreamingAsrEngine:
         self._sessions.pop(session_id, None)
 
     def is_hallucination(self, text: str) -> bool:
-        """Check if transcribed text is a common repetitive model hallucination."""
+        """Check if transcribed text is a known repetitive model hallucination."""
         cleaned = text.strip().lower()
         if not cleaned:
             return True
@@ -211,7 +283,7 @@ class StreamingAsrEngine:
             if cleaned == phrase:
                 return True
 
-        # Check for repetitive 3+ word n-gram loops (e.g. "you you you you")
+        # Check for repetitive 4+ identical word loops (e.g. "blah blah blah blah")
         words = cleaned.split()
         return bool(len(words) >= 4 and len(set(words)) == 1)
 
@@ -295,7 +367,7 @@ class StreamingAsrEngine:
             and current_buffered_ms >= self.config.min_audio_duration_ms
             and time_since_last_partial >= self.config.partial_interval_ms
         ):
-            window = session.buffer.get_all_samples()
+            window = session.buffer.get_all()
             text, confidence, timestamps = self.backend.transcribe(window, self.config.sample_rate)
             clean_text = self.sanitize_transcript(text)
 

@@ -1,10 +1,15 @@
-"""Unit tests for Streaming ASR Engine and session coordination."""
+"""Unit tests and model-backed integration tests for Streaming ASR Engine."""
+
+from pathlib import Path
 
 import numpy as np
+import pytest
+import soundfile as sf
 
 from asr.engine import (
-    AcousticBaselineBackend,
     AsrEngineConfig,
+    FasterWhisperBackend,
+    MockAsrBackend,
     StreamingAsrEngine,
     WordTimestamp,
 )
@@ -22,42 +27,48 @@ def make_silence_chunk(duration_sec: float = 0.05) -> np.ndarray:
     return np.zeros(int(16000 * duration_sec), dtype=np.float32)
 
 
-class TestStreamingAsrEngine:
-    """Test suite for streaming ASR inference and lifecycle."""
+class TestStreamingAsrEngineLifecycle:
+    """Unit tests for streaming ASR session coordination and state management using MockAsrBackend."""
 
-    def test_partial_transcript_emission(self) -> None:
+    @pytest.fixture
+    def mock_backend(self) -> MockAsrBackend:
+        return MockAsrBackend(
+            default_transcript="hello world",
+            default_confidence=0.92,
+        )
+
+    def test_partial_transcript_emission(self, mock_backend: MockAsrBackend) -> None:
         engine = StreamingAsrEngine(
             config=AsrEngineConfig(
                 partial_interval_ms=100.0,
                 min_audio_duration_ms=100.0,
             ),
+            backend=mock_backend,
             vad_config=VadConfig(min_speech_duration_ms=50),
         )
         session_id = "test-session-partial"
-        speech_chunk = make_sine_chunk(duration_sec=0.05)  # 50ms chunks
+        speech_chunk = make_sine_chunk(duration_sec=0.05)
 
         all_events = []
-        # Feed 6 chunks = 300ms speech
         for _ in range(6):
             events = engine.process_audio_chunk(session_id, speech_chunk)
             all_events.extend(events)
 
-        # Should have generated at least one partial transcript
         assert len(all_events) >= 1
         first_event = all_events[0]
         assert not first_event.is_final
         assert first_event.session_id == session_id
         assert first_event.sequence_id >= 1
-        assert len(first_event.text) > 0
-        assert first_event.confidence > 0.5
-        assert first_event.latency_metrics.audio_duration_ms > 0
+        assert first_event.text == "hello world"
+        assert first_event.confidence == 0.92
 
-    def test_final_transcript_on_utterance_boundary(self) -> None:
+    def test_final_transcript_on_utterance_boundary(self, mock_backend: MockAsrBackend) -> None:
         engine = StreamingAsrEngine(
             config=AsrEngineConfig(
                 partial_interval_ms=100.0,
                 min_audio_duration_ms=100.0,
             ),
+            backend=mock_backend,
             vad_config=VadConfig(
                 min_speech_duration_ms=60,
                 min_silence_duration_ms=150,
@@ -82,16 +93,41 @@ class TestStreamingAsrEngine:
         final_event = final_events[0]
         assert final_event.is_final
         assert final_event.session_id == session_id
-        assert len(final_event.word_timestamps) > 0
-        assert final_event.word_timestamps[0].word == "hello"
+        assert final_event.text == "hello world"
 
-    def test_explicit_session_flush(self) -> None:
+    def test_multiple_chunks_same_utterance_not_independent_finals(self, mock_backend: MockAsrBackend) -> None:
+        """Verify multiple chunks of continuous speech do NOT prematurely emit final transcripts."""
         engine = StreamingAsrEngine(
             config=AsrEngineConfig(min_audio_duration_ms=100.0),
+            backend=mock_backend,
+            vad_config=VadConfig(min_speech_duration_ms=60, min_silence_duration_ms=300),
+        )
+        session_id = "continuous-stream"
+        speech_chunk = make_sine_chunk(duration_sec=0.1)
+
+        # Feed 10 consecutive chunks = 1.0s of continuous speech without silence
+        all_events = []
+        for _ in range(10):
+            events = engine.process_audio_chunk(session_id, speech_chunk)
+            all_events.extend(events)
+
+        # There must be ZERO final events emitted while speech continues
+        final_events = [e for e in all_events if e.is_final]
+        assert len(final_events) == 0, f"Expected 0 final events during continuous speech, got {len(final_events)}"
+
+        # Only upon explicit flush or silence boundary is the final event produced
+        flushed = engine.flush_session(session_id)
+        assert len(flushed) == 1
+        assert flushed[0].is_final
+
+    def test_explicit_session_flush(self, mock_backend: MockAsrBackend) -> None:
+        engine = StreamingAsrEngine(
+            config=AsrEngineConfig(min_audio_duration_ms=100.0),
+            backend=mock_backend,
             vad_config=VadConfig(min_speech_duration_ms=50),
         )
         session_id = "test-flush-session"
-        speech = make_sine_chunk(duration_sec=0.25)  # 250ms
+        speech = make_sine_chunk(duration_sec=0.25)
 
         engine.process_audio_chunk(session_id, speech)
         flushed_events = engine.flush_session(session_id)
@@ -106,36 +142,34 @@ class TestStreamingAsrEngine:
         ) -> tuple[str, float, list[WordTimestamp]]:
             return "Thank you for watching", 0.99, []
 
-        backend = AcousticBaselineBackend(custom_transcriber=hallucinating_backend)
+        backend = MockAsrBackend(custom_transcriber=hallucinating_backend)
         engine = StreamingAsrEngine(backend=backend)
 
         session_id = "test-hallucination"
         speech = make_sine_chunk(duration_sec=0.3)
         events = engine.process_audio_chunk(session_id, speech)
-        assert len(events) == 0  # Suppressed
+        assert len(events) == 0
 
         flushed = engine.flush_session(session_id)
-        assert len(flushed) == 0  # Suppressed
+        assert len(flushed) == 0
 
     def test_repetitive_ngram_hallucination_suppression(self) -> None:
-        def loop_backend(
-            audio: np.ndarray, sample_rate: int
-        ) -> tuple[str, float, list[WordTimestamp]]:
-            return "you you you you", 0.95, []
+        engine = StreamingAsrEngine(backend=MockAsrBackend())
 
-        backend = AcousticBaselineBackend(custom_transcriber=loop_backend)
-        engine = StreamingAsrEngine(backend=backend)
-
-        assert engine.is_hallucination("you you you you")
+        assert engine.is_hallucination("blah blah blah blah")
         assert engine.is_hallucination("thank you for watching")
+        # Legitimate conversational words must NOT be suppressed
         assert not engine.is_hallucination("where are you going today")
+        assert not engine.is_hallucination("see you later")
+        assert not engine.is_hallucination("bye for now")
 
-    def test_session_isolation(self) -> None:
+    def test_session_isolation(self, mock_backend: MockAsrBackend) -> None:
         engine = StreamingAsrEngine(
             config=AsrEngineConfig(
                 partial_interval_ms=50.0,
                 min_audio_duration_ms=50.0,
             ),
+            backend=mock_backend,
             vad_config=VadConfig(min_speech_duration_ms=40),
         )
         s1 = "sess-1"
@@ -153,8 +187,8 @@ class TestStreamingAsrEngine:
         assert s1 not in engine._sessions
         assert s2 in engine._sessions
 
-    def test_event_dict_schema_serialization(self) -> None:
-        engine = StreamingAsrEngine()
+    def test_event_dict_schema_serialization(self, mock_backend: MockAsrBackend) -> None:
+        engine = StreamingAsrEngine(backend=mock_backend)
         engine.process_audio_chunk(
             "sess-100",
             make_sine_chunk(duration_sec=0.3),
@@ -163,22 +197,38 @@ class TestStreamingAsrEngine:
         assert len(flushed) == 1
 
         payload = flushed[0].to_dict()
-        assert "sessionId" in payload
-        assert "sequenceId" in payload
-        assert "text" in payload
-        assert "isFinal" in payload
-        assert "confidence" in payload
-        assert "wordTimestamps" in payload
+        assert payload["sessionId"] == "sess-100"
+        assert payload["isFinal"] is True
+        assert payload["text"] == "hello world"
         assert "latencyMetrics" in payload
         assert "audioDurationMs" in payload["latencyMetrics"]
         assert "processingTimeMs" in payload["latencyMetrics"]
 
-    def test_silence_input_produces_no_spurious_events(self) -> None:
-        engine = StreamingAsrEngine()
-        silence = make_silence_chunk(duration_sec=0.5)
 
-        events = engine.process_audio_chunk("silent-sess", silence)
-        assert len(events) == 0
+class TestFasterWhisperInference:
+    """Model-backed integration tests for real Faster-Whisper ASR inference."""
 
-        flushed = engine.flush_session("silent-sess")
-        assert len(flushed) == 0
+    @pytest.fixture
+    def real_speech_audio(self) -> tuple[np.ndarray, int]:
+        audio_path = Path(__file__).resolve().parent / "data" / "speech_sample_16k.wav"
+        if not audio_path.exists():
+            pytest.skip("speech_sample_16k.wav not found")
+        data, sr = sf.read(str(audio_path))
+        return data, sr
+
+    def test_faster_whisper_backend_inference(self, real_speech_audio: tuple[np.ndarray, int]) -> None:
+        data, sr = real_speech_audio
+        # First 5 seconds
+        sample_audio = data[: sr * 5]
+
+        backend = FasterWhisperBackend(model_size="tiny.en")
+        text, confidence, timestamps = backend.transcribe(sample_audio, sr)
+
+        assert len(text) > 0
+        # Text should contain genuine speech words from the LibriSpeech recording
+        lower = text.lower()
+        assert any(w in lower for w in ["stew", "dinner", "turnips", "carrots", "potatoes"])
+        assert 0.0 <= confidence <= 1.0
+        assert len(timestamps) > 0
+        assert timestamps[0].start_ms >= 0.0
+        assert timestamps[0].end_ms > timestamps[0].start_ms

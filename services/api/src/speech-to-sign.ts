@@ -31,60 +31,6 @@ interface MlServiceAsrResponse {
   error?: string;
 }
 
-function buildFallbackRepresentation(
-  text: string,
-  sessionId = "default",
-): SignRepresentation {
-  const words = text.trim().split(/\s+/).filter(Boolean);
-  const now = Date.now();
-
-  const tokens = words.map((word, index) => {
-    const gloss = word.toUpperCase();
-    const startTime = index * 420;
-
-    return {
-      tokenId: `tok_${index}_${gloss.toLowerCase()}`,
-      clipId: `asl_${gloss.toLowerCase()}_01`,
-      gloss,
-      timing: {
-        startTimeMs: startTime,
-        leadInDurationMs: 120,
-        holdDurationMs: 300,
-        leadOutDurationMs: 100,
-      },
-      spatialLoci: {
-        anchor: (gloss === "ME" || gloss === "I"
-          ? "chest"
-          : "neutral_space") as "chest" | "neutral_space",
-        targetOffset: {
-          x: 0.0,
-          y: 0.0,
-          z: gloss === "ME" || gloss === "I" ? 0.1 : 0.35,
-        },
-      },
-      nonManualMarkers: {
-        eyebrowIntensity: text.includes("?") ? 0.85 : 0.0,
-        eyebrowShape: (text.includes("?") ? "furrow" : "neutral") as
-          "furrow" | "neutral",
-        headRotation: { pitch: 0.0, yaw: 0.0, roll: 0.0 },
-        mouthShape: "neutral",
-      },
-      interpolationCurve: "bezier_slerp" as const,
-    };
-  });
-
-  const totalDurationMs =
-    tokens.length > 0 ? tokens[tokens.length - 1]!.timing.startTimeMs + 520 : 0;
-
-  return {
-    version: "1.0.0",
-    sessionId,
-    utteranceId: `utt_${now}`,
-    totalDurationMs,
-    tokens,
-  };
-}
-
 export async function translateSpeechToSign(
   request: TextToSignRequest,
 ): Promise<Result<TextToSignResponse, DomainError>> {
@@ -95,6 +41,7 @@ export async function translateSpeechToSign(
   if (!englishText) {
     const emptyResponse: TextToSignResponse = {
       tokens: [],
+      aslTokens: [],
       totalDurationMs: 0,
       latencyMs: Date.now() - startTime,
     };
@@ -111,83 +58,85 @@ export async function translateSpeechToSign(
           englishText,
           sessionId,
         }),
-        signal: AbortSignal.timeout(1500),
+        signal: AbortSignal.timeout(5000),
       },
     );
 
-    if (response.ok) {
-      const body = (await response.json()) as MlServiceCompileResponse;
-      if (body.ok && body.data) {
-        const representation = body.data;
-        const tokens: SignToken[] = representation.tokens.map((t) => ({
-          gloss: t.gloss,
-          durationMs:
-            t.timing.leadInDurationMs +
-            t.timing.holdDurationMs +
-            t.timing.leadOutDurationMs,
-        }));
-
-        const eyebrowMap: Record<
-          "furrow" | "raise" | "neutral",
-          "furrowed" | "raised" | "neutral"
-        > = {
-          furrow: "furrowed",
-          raise: "raised",
-          neutral: "neutral",
-        };
-
-        const aslTokens: AslGlossToken[] = representation.tokens.map((t) => ({
-          gloss: t.gloss,
-          lemma: t.gloss.toLowerCase(),
-          partOfSpeech: "NOUN",
-          nonManualMarkers: {
-            eyebrows: eyebrowMap[t.nonManualMarkers.eyebrowShape],
-            headMotion: "neutral",
-            mouthMorpheme:
-              t.nonManualMarkers.mouthShape === "neutral"
-                ? undefined
-                : t.nonManualMarkers.mouthShape,
-          },
-          isFingerspelled: t.clipId.startsWith("asl_fs_"),
-        }));
-
-        return ok({
-          tokens,
-          aslTokens,
-          representation,
-          totalDurationMs: representation.totalDurationMs,
-          latencyMs: Date.now() - startTime,
-        });
-      }
+    if (!response.ok) {
+      return err({
+        component: "translation",
+        code: "HTTP_ERROR",
+        message: `Translation service HTTP error: ${response.status} ${response.statusText}`,
+        recoverable: true,
+      });
     }
-  } catch {
-    // Network / service timeout - fall back to deterministic local compilation
-  }
 
-  // Graceful local fallback
-  const fallbackRepresentation = buildFallbackRepresentation(
-    englishText,
-    sessionId,
-  );
-  const fallbackTokens: SignToken[] = fallbackRepresentation.tokens.map(
-    (t) => ({
+    const body = (await response.json()) as MlServiceCompileResponse;
+    if (!body.ok || !body.data) {
+      return err({
+        component: "translation",
+        code: "COMPILATION_FAILED",
+        message: body.error ?? "Failed to compile text to ASL representation",
+        recoverable: false,
+      });
+    }
+
+    const representation = body.data;
+    const tokens: SignToken[] = representation.tokens.map((t) => ({
       gloss: t.gloss,
-      durationMs: 400,
-    }),
-  );
+      durationMs:
+        t.timing.leadInDurationMs +
+        t.timing.holdDurationMs +
+        t.timing.leadOutDurationMs,
+    }));
 
-  return ok({
-    tokens: fallbackTokens,
-    representation: fallbackRepresentation,
-    totalDurationMs: fallbackRepresentation.totalDurationMs,
-    latencyMs: Date.now() - startTime,
-  });
+    const eyebrowMap: Record<
+      "furrow" | "raise" | "neutral",
+      "furrowed" | "raised" | "neutral"
+    > = {
+      furrow: "furrowed",
+      raise: "raised",
+      neutral: "neutral",
+    };
+
+    const aslTokens: AslGlossToken[] = representation.tokens.map((t) => ({
+      gloss: t.gloss,
+      lemma: t.gloss.toLowerCase(),
+      partOfSpeech: "NOUN",
+      nonManualMarkers: {
+        eyebrows: eyebrowMap[t.nonManualMarkers.eyebrowShape],
+        headMotion: "neutral",
+        mouthMorpheme:
+          t.nonManualMarkers.mouthShape === "neutral"
+            ? undefined
+            : t.nonManualMarkers.mouthShape,
+      },
+      isFingerspelled: t.clipId.startsWith("asl_fs_"),
+    }));
+
+    return ok({
+      tokens,
+      aslTokens,
+      representation,
+      totalDurationMs: representation.totalDurationMs,
+      latencyMs: Date.now() - startTime,
+    });
+  } catch (error) {
+    return err({
+      component: "translation",
+      code: "SERVICE_UNAVAILABLE",
+      message:
+        error instanceof Error
+          ? `Translation service unavailable: ${error.message}`
+          : "Translation service unavailable",
+      recoverable: true,
+    });
+  }
 }
 
 export async function transcribeSpeech(
   request: AsrRequest,
 ): Promise<Result<AsrResponse, DomainError>> {
-  const startTime = Date.now();
   const audioBase64 = request.audioBase64 ?? "";
   const audioFormat = request.audioFormat ?? "pcm_s16le";
   const sessionId = request.sessionId ?? "default_session";
@@ -210,29 +159,43 @@ export async function transcribeSpeech(
         audioFormat,
         sessionId,
       }),
-      signal: AbortSignal.timeout(2000),
+      signal: AbortSignal.timeout(10000),
     });
 
-    if (response.ok) {
-      const body = (await response.json()) as MlServiceAsrResponse;
-      if (body.ok && body.data) {
-        return ok({
-          transcript: body.data.transcript,
-          isFinal: body.data.isFinal,
-          confidence: body.data.confidence,
-          durationMs: body.data.durationMs,
-        });
-      }
+    if (!response.ok) {
+      return err({
+        component: "asr",
+        code: "HTTP_ERROR",
+        message: `ASR service HTTP error: ${response.status} ${response.statusText}`,
+        recoverable: true,
+      });
     }
-  } catch {
-    // Network / timeout
-  }
 
-  // Fallback response
-  return ok({
-    transcript: "",
-    isFinal: true,
-    confidence: 0.0,
-    durationMs: Date.now() - startTime,
-  });
+    const body = (await response.json()) as MlServiceAsrResponse;
+    if (!body.ok || !body.data) {
+      return err({
+        component: "asr",
+        code: "TRANSCRIPTION_FAILED",
+        message: body.error ?? "ASR transcription failed",
+        recoverable: false,
+      });
+    }
+
+    return ok({
+      transcript: body.data.transcript,
+      isFinal: body.data.isFinal,
+      confidence: body.data.confidence,
+      durationMs: body.data.durationMs,
+    });
+  } catch (error) {
+    return err({
+      component: "asr",
+      code: "SERVICE_UNAVAILABLE",
+      message:
+        error instanceof Error
+          ? `ASR service unavailable: ${error.message}`
+          : "ASR service unavailable",
+      recoverable: true,
+    });
+  }
 }

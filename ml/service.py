@@ -54,91 +54,149 @@ class ModelServiceHandler(BaseHTTPRequestHandler):
             self._handle_compile(body)
         elif self.path == "/internal/speech/asr":
             self._handle_asr(body)
+        elif self.path == "/internal/speech/chunk":
+            self._handle_chunk(body)
+        elif self.path == "/internal/speech/flush":
+            self._handle_flush(body)
         elif self.path == "/internal/pipeline/audio-to-sign":
             self._handle_audio_to_sign(body)
         else:
             self._send_json(404, {"ok": False, "error": f"Endpoint not found: {self.path}"})
 
     def _handle_compile(self, body: dict[str, Any]) -> None:
-        english_text = body.get("englishText", "")
-        session_id = body.get("sessionId", "default_session")
-        utterance_id = body.get("utteranceId", "utt_001")
+        try:
+            english_text = body.get("englishText", "")
+            session_id = body.get("sessionId", "default_session")
+            utterance_id = body.get("utteranceId", "utt_001")
 
-        representation = self.pipeline.translate(
-            english_text=english_text,
-            session_id=session_id,
-            utterance_id=utterance_id,
-        )
+            representation = self.pipeline.translate(
+                english_text=english_text,
+                session_id=session_id,
+                utterance_id=utterance_id,
+            )
 
-        self._send_json(200, {
-            "ok": True,
-            "data": representation.to_dict(),
-        })
+            self._send_json(200, {
+                "ok": True,
+                "data": representation.to_dict(),
+            })
+        except Exception as e:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": f"Compilation failed: {e}"})
 
     def _handle_asr(self, body: dict[str, Any]) -> None:
-        audio_b64 = body.get("audioBase64", "")
-        audio_format = body.get("audioFormat", "pcm_s16le")
-        session_id = body.get("sessionId", "default_session")
+        try:
+            audio_b64 = body.get("audioBase64", "")
+            audio_format = body.get("audioFormat", "pcm_s16le")
+            session_id = body.get("sessionId", "default_session")
 
-        events = self.asr_engine.process_audio_chunk(
-            session_id=session_id,
-            audio_data=audio_b64,
-            audio_format=audio_format,
-        )
+            if not audio_b64:
+                self._send_json(400, {"ok": False, "error": "audioBase64 must not be empty"})
+                return
 
-        flushed = self.asr_engine.flush_session(session_id)
-        all_events = events + flushed
+            events = self.asr_engine.process_audio_chunk(
+                session_id=session_id,
+                audio_data=audio_b64,
+                audio_format=audio_format,
+            )
 
-        final_transcript = ""
-        confidence = 0.0
-        duration_ms = 0.0
+            flushed = self.asr_engine.flush_session(session_id)
+            all_events = events + flushed
 
-        if all_events:
-            last = all_events[-1]
-            final_transcript = last.text
-            confidence = last.confidence
-            duration_ms = last.latency_metrics.audio_duration_ms
+            final_transcript = ""
+            confidence = 0.0
+            duration_ms = 0.0
 
-        self._send_json(200, {
-            "ok": True,
-            "data": {
-                "transcript": final_transcript,
-                "isFinal": True,
-                "confidence": confidence,
-                "durationMs": duration_ms,
-                "events": [e.to_dict() for e in all_events],
-            },
-        })
+            if all_events:
+                last = all_events[-1]
+                final_transcript = last.text
+                confidence = last.confidence
+                duration_ms = last.latency_metrics.audio_duration_ms
+
+            self._send_json(200, {
+                "ok": True,
+                "data": {
+                    "transcript": final_transcript,
+                    "isFinal": True,
+                    "confidence": confidence,
+                    "durationMs": duration_ms,
+                    "events": [e.to_dict() for e in all_events],
+                },
+            })
+        except Exception as e:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": f"ASR transcription failed: {e}"})
+
+    def _handle_chunk(self, body: dict[str, Any]) -> None:
+        try:
+            audio_b64 = body.get("audioBase64", "")
+            audio_format = body.get("audioFormat", "pcm_s16le")
+            session_id = body.get("sessionId", "default_session")
+
+            if not audio_b64:
+                self._send_json(400, {"ok": False, "error": "audioBase64 must not be empty"})
+                return
+
+            events = self.asr_engine.process_audio_chunk(
+                session_id=session_id,
+                audio_data=audio_b64,
+                audio_format=audio_format,
+            )
+
+            self._send_json(200, {
+                "ok": True,
+                "data": {
+                    "events": [e.to_dict() for e in events],
+                    "count": len(events),
+                },
+            })
+        except Exception as e:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": f"Audio chunk processing failed: {e}"})
+
+    def _handle_flush(self, body: dict[str, Any]) -> None:
+        try:
+            session_id = body.get("sessionId", "default_session")
+            events = self.asr_engine.flush_session(session_id)
+
+            self._send_json(200, {
+                "ok": True,
+                "data": {
+                    "events": [e.to_dict() for e in events],
+                    "count": len(events),
+                },
+            })
+        except Exception as e:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": f"Session flush failed: {e}"})
 
     def _handle_audio_to_sign(self, body: dict[str, Any]) -> None:
-        audio_b64 = body.get("audioBase64", "")
-        audio_format = body.get("audioFormat", "pcm_s16le")
-        session_id = body.get("sessionId", "default_session")
-        utterance_id = body.get("utteranceId", "utt_001")
+        try:
+            audio_b64 = body.get("audioBase64", "")
+            audio_format = body.get("audioFormat", "pcm_s16le")
+            session_id = body.get("sessionId", "default_session")
+            utterance_id = body.get("utteranceId", "utt_001")
 
-        events = self.asr_engine.process_audio_chunk(
-            session_id=session_id,
-            audio_data=audio_b64,
-            audio_format=audio_format,
-        )
-        flushed = self.asr_engine.flush_session(session_id)
-        all_events = events + flushed
+            events = self.asr_engine.process_audio_chunk(
+                session_id=session_id,
+                audio_data=audio_b64,
+                audio_format=audio_format,
+            )
+            flushed = self.asr_engine.flush_session(session_id)
+            all_events = events + flushed
 
-        transcript = all_events[-1].text if all_events else ""
+            transcript = all_events[-1].text if all_events else ""
 
-        representation = self.pipeline.translate(
-            english_text=transcript,
-            session_id=session_id,
-            utterance_id=utterance_id,
-        )
+            representation = self.pipeline.translate(
+                english_text=transcript,
+                session_id=session_id,
+                utterance_id=utterance_id,
+            )
 
-        self._send_json(200, {
-            "ok": True,
-            "data": {
-                "transcript": transcript,
-                "representation": representation.to_dict(),
-            },
-        })
+            self._send_json(200, {
+                "ok": True,
+                "data": {
+                    "transcript": transcript,
+                    "representation": representation.to_dict(),
+                },
+            })
+        except Exception as e:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": f"Audio-to-sign pipeline failed: {e}"})
 
 
 def run_server(port: int = 5050) -> None:

@@ -205,7 +205,36 @@ class GrammarTransformResult:
 
 
 class GrammarRuleCompiler:
-    """Compiles English sentences into ASL Topic-Comment / TSOV gloss sequences."""
+    """Deterministic Rule-Based English-to-ASL Grammar Compiler.
+
+    Architecture & Linguistic Strategy:
+    - This compiler uses an explicit rule-based transformation pipeline to
+      convert standard English word order (SVO) into canonical ASL Topic-Comment
+      and Time-Subject-Object-Verb (TSOV) gloss sequences.
+    - It is NOT a statistical dependency parser or neural machine translation model.
+    - Transformation Rules Applied:
+        1. Temporal Fronting: Adverbial time markers ("tomorrow", "yesterday", "now")
+           are shifted to the initial position (TSOV).
+        2. Copula Deletion: Forms of the verb "to be" ("is", "are", "was", "were")
+           are eliminated.
+        3. Article Deletion: Indefinite and definite articles ("a", "an", "the")
+           are stripped.
+        4. Do-Support Elimination: Auxiliary "do/does/did" in questions and negations
+           is removed.
+        5. Wh-Movement: Interrogative pronouns ("who", "what", "where", "when",
+           "why", "which", "how") are moved to clause-final position.
+        6. Negation Placement: Negation particles are normalized to "NOT" and placed
+           after the main predicate.
+        7. Pronoun Normalization: First/second/third person pronouns are mapped
+           to pointing glosses ("ME", "YOU", "HE", "SHE", "THEY").
+        8. Verb Lemmatization: Inflected verb forms are mapped to base ASL glosses.
+
+    Linguistic Limitations:
+    - Does not resolve nested relative clauses or complex subordinate clauses.
+    - Does not handle passive-to-active voice inversion.
+    - Idiomatic English expressions (e.g. "it is raining cats and dogs") will be
+      translated literally rather than mapped to idiomatic ASL classifiers.
+    """
 
     def tokenize(self, text: str) -> list[str]:
         """Split text into word tokens preserving punctuation cues."""

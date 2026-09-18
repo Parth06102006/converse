@@ -55,3 +55,29 @@ class TestSpatialLociTracker:
         # After reset, first new entity should receive 'left' again
         locus = self.tracker.assign_referent("CAROL")
         assert locus.target_offset.x == -0.30
+
+    def test_discourse_entity_and_pronoun_binding_across_turns(self) -> None:
+        from translation.pipeline import SpeechToSignPipeline
+
+        pipeline = SpeechToSignPipeline()
+        session_id = "discourse_session_01"
+
+        # Turn 1: Alice is introduced (OOV name -> assigned left locus)
+        rep1 = pipeline.translate("Alice arrived yesterday.", session_id=session_id)
+        alice_toks = [t for t in rep1.tokens if t.gloss in ("A", "L", "I", "C", "E") or "alice" in t.token_id.lower()]
+        assert len(alice_toks) > 0
+        assert alice_toks[0].spatial_loci.target_offset.x == -0.30  # left
+
+        # Turn 2: "She wants coffee." -> SHE should resolve to Alice's locus (left)
+        rep2 = pipeline.translate("She wants coffee.", session_id=session_id)
+        she_tok = next(t for t in rep2.tokens if t.gloss == "SHE")
+        assert she_tok.spatial_loci.target_offset.x == -0.30  # points to left where Alice was established
+
+        # Reset session discourse
+        pipeline.close_session(session_id)
+
+        # Turn 3: New session -> new entity gets left locus
+        rep3 = pipeline.translate("Bob is happy.", session_id=session_id)
+        bob_toks = [t for t in rep3.tokens if t.gloss in ("B", "O") or "bob" in t.token_id.lower()]
+        assert len(bob_toks) > 0
+        assert bob_toks[0].spatial_loci.target_offset.x == -0.30

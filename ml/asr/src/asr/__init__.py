@@ -7,16 +7,20 @@ from asr.buffer import (
     resample_to_16k,
 )
 from asr.engine import (
-    AcousticBaselineBackend,
     AsrBackendProtocol,
     AsrEngineConfig,
     AsrLatencyMetrics,
     AsrSessionState,
     AsrTranscriptEvent,
+    FasterWhisperBackend,
+    MockAsrBackend,
     StreamingAsrEngine,
     WordTimestamp,
 )
 from asr.vad import (
+    EnergyZcrBaselineBackend,
+    SileroOnnxVadBackend,
+    VadBackendProtocol,
     VadConfig,
     VadFrameResult,
     VadState,
@@ -24,15 +28,19 @@ from asr.vad import (
 )
 
 __all__ = [
-    "AcousticBaselineBackend",
     "AsrBackendProtocol",
     "AsrEngineConfig",
     "AsrLatencyMetrics",
     "AsrSessionState",
     "AsrTranscriptEvent",
     "AudioChunk",
+    "EnergyZcrBaselineBackend",
+    "FasterWhisperBackend",
+    "MockAsrBackend",
+    "SileroOnnxVadBackend",
     "SlidingAudioBuffer",
     "StreamingAsrEngine",
+    "VadBackendProtocol",
     "VadConfig",
     "VadFrameResult",
     "VadState",

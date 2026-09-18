@@ -111,7 +111,10 @@ class SpatialLociTracker:
         if upper in ADDRESSEE_REFERENT_GLOSSES:
             return LOCI_COORDINATES["neutral_space"]
 
-        # 3. Third person pronouns resolve to active referent locus
+        # 3. Third person pronouns or explicit named entities resolve to active referent locus
+        if upper in self._session_referents:
+            return LOCI_COORDINATES[self._session_referents[upper]]
+
         if upper in THIRD_PERSON_GLOSSES:
             if previous_entities and previous_entities[0] in self._session_referents:
                 locus = self._session_referents[previous_entities[0]]
