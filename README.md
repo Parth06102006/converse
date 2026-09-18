@@ -88,7 +88,7 @@ converse/
     ├── architecture.md         # Master architecture specification
     ├── contracts.md            # REST API signatures, schemas, and Result/Option semantics
     ├── decisions.md            # Architecture Decision Records (ADRs 001 to 006)
-    ├── milestones.md           # Phased roadmap and implementation checklists
+    ├── milestones/             # System roadmap and teammate tracks (ashwani, kanishka, priyanshu)
     ├── architecture/           # Subsystem architecture dossiers (data flow, realtime, runtime)
     ├── api/                    # Streaming protocol and wire-level framing
     └── research/               # ML research dossiers (datasets, models, linguistics)
@@ -175,7 +175,7 @@ Detailed specifications and architecture records are maintained in `docs/`:
 - [Data Contracts (`docs/contracts.md`)](docs/contracts.md): REST signatures, schemas, and `Result<T, E>` / `Option<T>` error patterns.
 - [Streaming Protocol (`docs/api/protocol.md`)](docs/api/protocol.md): Real-time WebRTC media channels and WebSocket message framing.
 - [Architecture Decisions (`docs/decisions.md`)](docs/decisions.md): Formally recorded ADRs (ADR-001 through ADR-006).
-- [Roadmap & Milestones (`docs/milestones.md`)](docs/milestones.md): Detailed phase completion criteria from Milestone 0 to 4.
+- [Roadmap & Milestones (`docs/milestones/`)](docs/milestones/README.md): System-wide roadmap and dedicated tracks for Ashwani, Kanishka, and Priyanshu.
 - [Research Dossiers (`docs/research/`)](docs/research/): Analysis on datasets (WLASL, YouTube-ASL, How2Sign), ML models, and sign linguistics.
 
 ---

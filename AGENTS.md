@@ -17,4 +17,4 @@ Converse is a real-time bidirectional ASL <-> English communication engine.
 - **Zero Emoji Standard**: Strictly zero emojis across all code, comments, documentation, UI strings, and commits.
 - **Strict Typing**: Zero `any` types. Enforce strict null and undefined safety on all public interfaces.
 - **Git Conventions**: Use conventional commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`) with clear technical rationale.
-- **Documentation Sync**: Keep `docs/milestones.md`, `docs/contracts.md`, and `docs/decisions.md` aligned whenever APIs or subsystem behaviors change.
+- **Documentation Sync**: Keep `docs/milestones/`, `docs/contracts.md`, and `docs/decisions.md` aligned whenever APIs or subsystem behaviors change.

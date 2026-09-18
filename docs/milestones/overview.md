@@ -2,6 +2,20 @@
 
 This document tracks the technical execution plan, deliverables, completion criteria, and verification procedures for Converse across Milestones 0 through 4.
 
+```mermaid
+flowchart LR
+    M0["Milestone 0: Monorepo Setup & Contracts (Completed)"]
+    M1["Milestone 1: ASL Vision & 3D Landmarks (In Progress)"]
+    M2["Milestone 2: Translation Engine, ASR & TTS (Planned)"]
+    M3["Milestone 3: Streaming API & Web Application (Planned)"]
+    M4["Milestone 4: VoIP Integration & Extension (Planned)"]
+
+    M0 --> M1
+    M1 --> M2
+    M2 --> M3
+    M3 --> M4
+```
+
 ---
 
 ## Milestone 0: Monorepo Setup and Invariant Contracts
