@@ -32,6 +32,7 @@ venv/
 *.safetensors
 *.task
 *.onnx
+*.bin
 models/checkpoints/*
 !models/checkpoints/.gitkeep
 

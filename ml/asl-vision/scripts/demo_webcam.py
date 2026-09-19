@@ -113,6 +113,163 @@ STANDARD_LOCATIONS = {"STORE", "BATHROOM", "RESTAURANT", "HOSPITAL", "LIBRARY", 
 ZERO_ARTICLE_LOCATIONS = {"SCHOOL", "WORK", "HOME", "CLASS", "BED"}
 
 
+class NeuralGestureModel:
+    """MediaPipe Tasks neural gesture recognizer running locally on edge camera frames."""
+
+    def __init__(self, model_path: Path | str, min_confidence: float = 0.45) -> None:
+        from mediapipe.tasks import python
+        from mediapipe.tasks.python import vision
+
+        self.min_confidence = min_confidence
+        base_options = python.BaseOptions(model_asset_path=str(model_path))
+        options = vision.GestureRecognizerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.VIDEO,
+            num_hands=2,
+            min_hand_detection_confidence=0.40,
+            min_hand_presence_confidence=0.40,
+            min_tracking_confidence=0.40,
+        )
+        self._recognizer = vision.GestureRecognizer.create_from_options(options)
+        self.last_neural_label: str | None = None
+        self.last_neural_score: float = 0.0
+        self.last_neural_desc: str | None = None
+
+    def process_frame(
+        self,
+        frame_rgb: np.ndarray,
+        extracted_pose: np.ndarray | None,
+        timestamp_ms: float,
+    ) -> tuple[SignDetection | None, str | None]:
+        """Runs the neural model and maps gesture + spatial context to SignDetection."""
+        import mediapipe as mp
+
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+        ts_int = int(timestamp_ms)
+        res = self._recognizer.recognize_for_video(mp_image, ts_int)
+
+        if not res.gestures or not res.hand_landmarks:
+            self.last_neural_label = None
+            self.last_neural_score = 0.0
+            self.last_neural_desc = None
+            return None, None
+
+        # Two-handed gestures check first
+        if len(res.gestures) >= 2 and len(res.hand_landmarks) >= 2:
+            g0 = res.gestures[0][0]
+            g1 = res.gestures[1][0]
+            if g0.category_name == "Open_Palm" and g1.category_name == "Open_Palm":
+                score = (g0.score + g1.score) / 2.0
+                if score >= self.min_confidence:
+                    self.last_neural_label = "WHAT"
+                    self.last_neural_score = score
+                    desc = f"Both Open Palms ({score * 100:.0f}%) -> WHAT"
+                    self.last_neural_desc = desc
+                    det = SignDetection(
+                        gloss="WHAT",
+                        confidence=score,
+                        start_time_ms=timestamp_ms,
+                        end_time_ms=timestamp_ms,
+                    )
+                    return det, desc
+
+        # Check primary hand
+        for i, hand_gestures in enumerate(res.gestures):
+            if not hand_gestures:
+                continue
+            top_g = hand_gestures[0]
+            cat = top_g.category_name
+            score = float(top_g.score)
+            if score < self.min_confidence or cat in ("None", ""):
+                continue
+
+            lms = res.hand_landmarks[i]
+            wrist_y = lms[0].y
+            tip_y = lms[8].y  # index tip
+            tip_x = lms[8].x
+
+            # Reference pose coordinates
+            shoulder_y = 0.45
+            nose_y = 0.25
+            chest_x = 0.5
+            shoulder_w = 0.25
+
+            if extracted_pose is not None and len(extracted_pose) >= 13:
+                nose_y = float(extracted_pose[0, 1])
+                ls_y = float(extracted_pose[11, 1])
+                rs_y = float(extracted_pose[12, 1])
+                ls_x = float(extracted_pose[11, 0])
+                rs_x = float(extracted_pose[12, 0])
+                shoulder_y = (ls_y + rs_y) / 2.0
+                chest_x = (ls_x + rs_x) / 2.0
+                shoulder_w = max(0.1, abs(ls_x - rs_x))
+
+            # Map neural gesture category + anatomical position
+            gloss: str | None = None
+            desc = ""
+
+            if cat == "Open_Palm":
+                chin_y = nose_y + 0.35 * (shoulder_y - nose_y)
+                if abs(wrist_y - chin_y) < 0.20 * shoulder_w or abs(tip_y - chin_y) < 0.25 * shoulder_w:
+                    gloss = "THANK-YOU"
+                    desc = f"Open_Palm at Chin ({score * 100:.0f}%) -> THANK-YOU"
+                elif wrist_y < shoulder_y or tip_y < shoulder_y:
+                    gloss = "HELLO"
+                    desc = f"Open_Palm at Head ({score * 100:.0f}%) -> HELLO"
+                else:
+                    gloss = "PLEASE"
+                    desc = f"Open_Palm on Chest ({score * 100:.0f}%) -> PLEASE"
+
+            elif cat == "Pointing_Up":
+                dist_to_chest = ((tip_x - chest_x) ** 2 + (tip_y - shoulder_y) ** 2) ** 0.5
+                if dist_to_chest < 0.28 * shoulder_w:
+                    gloss = "ME"
+                    desc = f"Pointing to Chest ({score * 100:.0f}%) -> ME"
+                else:
+                    gloss = "YOU"
+                    desc = f"Pointing at Camera ({score * 100:.0f}%) -> YOU"
+
+            elif cat == "Thumb_Up":
+                gloss = "GOOD"
+                desc = f"Thumb_Up ({score * 100:.0f}%) -> GOOD"
+
+            elif cat == "Victory":
+                gloss = "SEE"
+                desc = f"Victory / Two Fingers ({score * 100:.0f}%) -> SEE"
+
+            elif cat == "ILoveYou":
+                gloss = "LOVE"
+                desc = f"I-L-Y Sign ({score * 100:.0f}%) -> LOVE"
+
+            elif cat == "Closed_Fist":
+                gloss = "YES"
+                desc = f"Fist ({score * 100:.0f}%) -> YES"
+
+            if gloss is not None:
+                self.last_neural_label = gloss
+                self.last_neural_score = score
+                self.last_neural_desc = desc
+                det = SignDetection(
+                    gloss=gloss,
+                    confidence=score,
+                    start_time_ms=timestamp_ms,
+                    end_time_ms=timestamp_ms,
+                )
+                return det, desc
+
+        self.last_neural_label = None
+        self.last_neural_score = 0.0
+        self.last_neural_desc = None
+        return None, None
+
+    def close(self) -> None:
+        """Release underlying MediaPipe resources."""
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            self._recognizer.close()
+
+
 class KokoroTTSClient:
     """Manages neural TTS audio synthesis and playback via local Kokoro model."""
 
@@ -128,6 +285,7 @@ class KokoroTTSClient:
         self.is_speaking = False
         self.last_latency_ms: float = 0.0
         self.last_error: str | None = None
+        self._running = True
         self._speech_queue: queue.Queue[str] = queue.Queue(maxsize=10)
         self._worker_thread = threading.Thread(target=self._playback_worker, daemon=True)
         self._worker_thread.start()
@@ -184,12 +342,28 @@ class KokoroTTSClient:
         except queue.Full:
             pass
 
+    def stop(self) -> None:
+        """Stop background worker and wait for termination."""
+        self._running = False
+        try:
+            self._speech_queue.put_nowait("")
+        except queue.Full:
+            pass
+        if self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=1.0)
+
     def _playback_worker(self) -> None:
         """Dedicated background thread worker executing synthesis and playback."""
         output_wav = Path("/tmp/converse_kokoro_stream.wav")
 
-        while True:
-            text = self._speech_queue.get()
+        while self._running:
+            try:
+                text = self._speech_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+
+            if not self._running or not text:
+                break
             t0 = time.perf_counter()
             self.is_speaking = True
 
@@ -526,6 +700,7 @@ def draw_hud(
     last_reconstructed_sentence: str,
     tts_client: KokoroTTSClient,
     tick: int,
+    neural_desc: str | None = None,
 ) -> None:
     """Render telemetry diagnostics heads-up display and real-time subtitle cards."""
     h, w, _ = frame.shape
@@ -550,15 +725,42 @@ def draw_hud(
     cv2.putText(frame, f"Buffer: {buffer_len}/{window_size}", (bar_x + bar_width + 10, bar_y + 13), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1)
 
     # Top-right detection indicator
+    if neural_desc:
+        cv2.putText(frame, neural_desc, (w - 460, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 120), 2)
+
     if last_detection is not None and time_since_detection_ms < 2000:
         det_text = f"DETECTED: {last_detection.gloss.upper()} ({last_detection.confidence * 100:.0f}%)"
         text_size = cv2.getTextSize(det_text, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)[0]
         rx = w - text_size[0] - 20
-        cv2.putText(frame, det_text, (rx, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 120), 2)
+        cv2.putText(frame, det_text, (rx, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 120), 2)
     else:
-        cv2.putText(frame, "Awaiting Sign Gestures...", (w - 240, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (130, 130, 130), 1)
+        cv2.putText(frame, "Awaiting Sign Gestures...", (w - 240, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (130, 130, 130), 1)
 
-    # 2. Bottom Subtitle Card Overlay
+    # 2. Side Sign Reference Card Overlay
+    card_w = 260
+    card_h = 162
+    card_x = 16
+    card_y = 86
+    card_overlay = frame.copy()
+    cv2.rectangle(card_overlay, (card_x, card_y), (card_x + card_w, card_y + card_h), (12, 14, 20), -1)
+    cv2.addWeighted(card_overlay, 0.75, frame, 0.25, 0, frame)
+    cv2.rectangle(frame, (card_x, card_y), (card_x + card_w, card_y + card_h), (50, 60, 80), 1)
+
+    cv2.putText(frame, "SIGN GESTURE GUIDE", (card_x + 10, card_y + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 220, 255), 1)
+    guides = (
+        ("Wave Open Palm", "HELLO"),
+        ("Point at Camera", "YOU"),
+        ("Point at Chest", "ME"),
+        ("Open Palm at Chin", "THANK-YOU"),
+        ("Thumbs Up", "GOOD"),
+        ("Peace / V-Sign", "SEE"),
+        ("I-Love-You Sign", "LOVE"),
+    )
+    for idx, (gesture_str, gloss_str) in enumerate(guides):
+        gy = card_y + 38 + idx * 16
+        cv2.putText(frame, f"{gesture_str} -> {gloss_str}", (card_x + 10, gy), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (210, 210, 210), 1)
+
+    # 3. Bottom Subtitle Card Overlay
     sub_overlay = frame.copy()
     sub_height = 110
     cv2.rectangle(sub_overlay, (0, h - sub_height), (w, h), (12, 14, 20), -1)
@@ -606,12 +808,13 @@ def run_webcam_demo(
     extractor: LandmarkExtractor,
     camera_id: int = 0,
     tts_client: KokoroTTSClient | None = None,
+    neural_model: NeuralGestureModel | None = None,
 ) -> None:
     """Capture live camera stream and run the complete Sign-to-Speech pipeline."""
     if tts_client is None:
         tts_client = KokoroTTSClient(enabled=True)
 
-    stabilizer = PythonGlossStabilizer(min_confidence=0.50, debounce_window_ms=350.0, boundary_pause_ms=850.0)
+    stabilizer = PythonGlossStabilizer(min_confidence=0.45, debounce_window_ms=350.0, boundary_pause_ms=850.0)
 
     print(f"Opening camera index {camera_id}...")
     cap = cv2.VideoCapture(camera_id)
@@ -624,8 +827,8 @@ def run_webcam_demo(
 
     print("==================================================================")
     print("Converse Sign-to-Speech Live Pipeline Activated!")
-    print("Pipeline: Webcam -> MediaPipe -> ST-GCN -> Stabilizer -> Kokoro TTS")
-    print("Press [1-5] for quick test injections | [S] to force speak | [Q] to quit")
+    print("Pipeline: Webcam -> Neural Gesture Model & ST-GCN -> Stabilizer -> Kokoro TTS")
+    print("Perform ASL signs in front of the camera or use [1-5] for test injections")
     print("==================================================================")
 
     window_name = "Converse ASL Sign-to-Speech Engine"
@@ -660,19 +863,32 @@ def run_webcam_demo(
             # 1. Extract 3D landmarks
             extracted = extractor.extract(frame_rgb, timestamp_ms=timestamp_ms)
 
-            # 2. Vision perception engine inference
+            # 2. Neural Gesture Model inference (MediaPipe)
+            neural_det: SignDetection | None = None
+            neural_desc: str | None = None
+            if neural_model is not None:
+                neural_det, neural_desc = neural_model.process_frame(
+                    frame_rgb=frame_rgb,
+                    extracted_pose=extracted.pose,
+                    timestamp_ms=timestamp_ms,
+                )
+
+            # 3. Spatiotemporal sequence inference (ST-GCN)
             detections = engine.process_landmarks(extracted, timestamp_ms=timestamp_ms)
-            if detections:
-                det = detections[0]
-                last_detection = det
+
+            # Prioritize neural gesture detection or sequence detection
+            active_det = neural_det if neural_det is not None else (detections[0] if detections else None)
+            if active_det is not None:
+                last_detection = active_det
                 last_detection_wall_time = current_time
 
-                # 3. Stabilizer & Debouncer
-                accepted, is_dup, gloss = stabilizer.process_detection(det)
+                # 4. Stabilizer & Debouncer
+                accepted, is_dup, gloss = stabilizer.process_detection(active_det)
                 if accepted and not is_dup and gloss:
-                    print(f"[Vision] Detected Sign: {gloss} ({det.confidence * 100:.1f}%)")
+                    src = "Neural Gesture Model" if active_det == neural_det else "ST-GCN"
+                    print(f"[{src}] Detected Sign: {gloss} ({active_det.confidence * 100:.1f}%)")
 
-            # 4. Check for boundary pause flush (>850ms pause)
+            # 5. Check for boundary pause flush (>850ms pause)
             flushed = stabilizer.check_boundary(timestamp_ms)
             if flushed:
                 sentence = reconstruct_sentence(flushed)
@@ -681,7 +897,7 @@ def run_webcam_demo(
                 print(f"[TTS] Synthesizing speech via Kokoro ({tts_client.voice})...")
                 tts_client.speak(sentence)
 
-            # 5. Render HUD and Subtitles
+            # 6. Render HUD and Subtitles
             draw_landmarks(frame, extracted)
             time_since_ms = (current_time - last_detection_wall_time) * 1000.0
             draw_hud(
@@ -695,11 +911,12 @@ def run_webcam_demo(
                 last_reconstructed_sentence=last_reconstructed,
                 tts_client=tts_client,
                 tick=tick,
+                neural_desc=neural_desc,
             )
 
             cv2.imshow(window_name, frame)
 
-            # 6. Key bindings
+            # 7. Key bindings
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), ord("Q"), 27):
                 break
@@ -750,11 +967,16 @@ def run_webcam_demo(
                 print(f"[Sample 5] Spoken: \"{sentence}\"")
                 tts_client.speak(sentence)
 
+    except KeyboardInterrupt:
+        print("\nInterruption signal received. Exiting demo...")
     finally:
         cap.release()
         cv2.destroyAllWindows()
         extractor.close()
-        print("Camera capture terminated.")
+        if neural_model is not None:
+            neural_model.close()
+        tts_client.stop()
+        print("Camera capture and speech worker terminated.")
 
 
 def parse_args(args: Sequence[str] | None = None) -> argparse.Namespace:
@@ -807,6 +1029,19 @@ def ensure_mediapipe_model(target_dir: str = "models") -> Path:
     return task_file
 
 
+def ensure_gesture_recognizer_model(target_dir: str = "models") -> Path:
+    """Ensure Google MediaPipe Gesture Recognizer bundle is available, downloading if needed."""
+    models_path = Path(target_dir)
+    models_path.mkdir(parents=True, exist_ok=True)
+    task_file = models_path / "gesture_recognizer.task"
+    if not task_file.is_file():
+        url = "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task"
+        print(f"Downloading official MediaPipe Gesture Recognizer model (~8MB) to {task_file}...")
+        urllib.request.urlretrieve(url, task_file)
+        print("MediaPipe Gesture Recognizer asset downloaded.")
+    return task_file
+
+
 def main(args: Sequence[str] | None = None) -> None:
     """Entry point for live Sign-to-Speech demo."""
     parsed = parse_args(args)
@@ -822,6 +1057,10 @@ def main(args: Sequence[str] | None = None) -> None:
     extractor = LandmarkExtractor(model_path=model_path)
     engine = ASLVisionEngine(config=config, extractor=extractor)
 
+    gesture_model_path = ensure_gesture_recognizer_model()
+    neural_model = NeuralGestureModel(gesture_model_path, min_confidence=parsed.min_confidence)
+    print(f"Loaded pretrained MediaPipe Neural Gesture Model from: {gesture_model_path}")
+
     if parsed.checkpoint is not None:
         import torch
         ckpt = torch.load(parsed.checkpoint, map_location="cpu")
@@ -831,7 +1070,7 @@ def main(args: Sequence[str] | None = None) -> None:
             print(f"Loaded ST-GCN checkpoint from: {parsed.checkpoint}")
 
     tts_client = KokoroTTSClient(voice=parsed.voice, enabled=not parsed.no_tts)
-    run_webcam_demo(engine, extractor, camera_id=parsed.camera, tts_client=tts_client)
+    run_webcam_demo(engine, extractor, camera_id=parsed.camera, tts_client=tts_client, neural_model=neural_model)
 
 
 if __name__ == "__main__":
