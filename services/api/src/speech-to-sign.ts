@@ -140,6 +140,7 @@ export async function transcribeSpeech(
   const audioBase64 = request.audioBase64 ?? "";
   const audioFormat = request.audioFormat ?? "pcm_s16le";
   const sessionId = request.sessionId ?? "default_session";
+  const backend = request.backend;
 
   if (!audioBase64) {
     return err({
@@ -158,16 +159,24 @@ export async function transcribeSpeech(
         audioBase64,
         audioFormat,
         sessionId,
+        ...(backend ? { backend } : {}),
       }),
       signal: AbortSignal.timeout(10000),
     });
 
     if (!response.ok) {
+      const errorBody = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        code?: string;
+      };
       return err({
         component: "asr",
-        code: "HTTP_ERROR",
-        message: `ASR service HTTP error: ${response.status} ${response.statusText}`,
-        recoverable: true,
+        code: errorBody.code ?? "HTTP_ERROR",
+        message:
+          errorBody.error ??
+          `ASR service HTTP error: ${response.status} ${response.statusText}`,
+        recoverable: response.status >= 500,
       });
     }
 

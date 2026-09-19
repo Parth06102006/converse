@@ -5,11 +5,12 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 
 from asr.buffer import SlidingAudioBuffer, decode_audio_payload
+from asr.config import AsrEngineConfig
 from asr.vad import VadConfig, VoiceActivityDetector
 
 try:
@@ -79,6 +80,27 @@ class AsrBackendProtocol(Protocol):
         self, audio: np.ndarray, sample_rate: int
     ) -> tuple[str, float, list[WordTimestamp]]:
         """Transcribe audio array into (transcript, confidence, word_timestamps)."""
+        ...
+
+
+class AsrEngineProtocol(Protocol):
+    """Protocol for streaming ASR engines matching @converse/contracts."""
+
+    def process_audio_chunk(
+        self,
+        session_id: str,
+        audio_data: str | bytes | np.ndarray,
+        audio_format: str = "pcm_s16le",
+    ) -> list[AsrTranscriptEvent]:
+        """Process incoming audio chunk and yield partial and/or final transcript events."""
+        ...
+
+    def flush_session(self, session_id: str) -> list[AsrTranscriptEvent]:
+        """Explicitly finalize the current stream and return final events."""
+        ...
+
+    def close_session(self, session_id: str) -> None:
+        """Close and release session resources."""
         ...
 
 
@@ -192,22 +214,6 @@ class MockAsrBackend:
         return self.default_transcript, self.default_confidence, []
 
 
-@dataclass(frozen=True)
-class AsrEngineConfig:
-    """Configuration for streaming ASR engine."""
-
-    sample_rate: int = 16000
-    partial_interval_ms: float = 1400.0  # Emit partial transcript every 1.4s of speech audio
-    min_audio_duration_ms: float = 180.0  # Minimum audio to attempt partial inference
-    max_utterance_duration_sec: float = 30.0  # Cap on rolling utterance buffer
-    hallucination_phrases: tuple[str, ...] = (
-        "thank you for watching",
-        "thanks for watching",
-        "subscribe to my channel",
-        "subtitles by",
-    )
-
-
 class AsrSessionState:
     """Session state maintaining audio buffer, VAD, and emission counters."""
 
@@ -239,8 +245,8 @@ class AsrSessionState:
         self.vad.reset()
 
 
-class StreamingAsrEngine:
-    """Streaming ASR engine coordinating chunk ingestion, VAD, and transcript emission."""
+class WhisperAsrEngine:
+    """Local/dev ASR engine coordinating chunk ingestion, Silero VAD, and Faster-Whisper."""
 
     def __init__(
         self,
@@ -430,3 +436,37 @@ class StreamingAsrEngine:
 
         session.reset_utterance()
         return events
+
+
+# Backwards compatibility alias
+StreamingAsrEngine = WhisperAsrEngine
+
+
+def create_asr_engine(
+    backend: str | None = None,
+    config: AsrEngineConfig | None = None,
+    whisper_model_size: str | None = None,
+    vad_config: VadConfig | None = None,
+    client: Any | None = None,
+) -> AsrEngineProtocol:
+    """Factory creating provider-independent ASR engine based on configuration.
+
+    Default backend is 'aws' in production.
+    Explicit 'whisper' selects local Faster-Whisper.
+    """
+    cfg = config or AsrEngineConfig()
+    selected_backend = (backend or cfg.backend or "aws").strip().lower()
+
+    if selected_backend == "aws":
+        from asr.aws_transcribe import AwsTranscribeStreamingEngine
+        return AwsTranscribeStreamingEngine(config=cfg, client=client)
+    elif selected_backend == "whisper":
+        whisper_backend = FasterWhisperBackend(model_size=whisper_model_size) if HAS_FASTER_WHISPER else None
+        return WhisperAsrEngine(config=cfg, backend=whisper_backend, vad_config=vad_config)
+    elif selected_backend == "mock":
+        return WhisperAsrEngine(config=cfg, backend=MockAsrBackend(), vad_config=vad_config)
+    else:
+        from asr.exceptions import AwsAsrConfigurationError
+        raise AwsAsrConfigurationError(
+            f"Unsupported ASR backend: '{selected_backend}'. Supported: 'aws', 'whisper', 'mock'."
+        )

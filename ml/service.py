@@ -13,14 +13,28 @@ sys.path.insert(0, str(ROOT / "translation" / "src"))
 
 from translation.pipeline import SpeechToSignPipeline
 
-from asr.engine import StreamingAsrEngine
+from asr.engine import AsrEngineProtocol, create_asr_engine
+from asr.exceptions import (
+    AsrAudioDecodingError,
+    AsrError,
+    AwsAsrAuthError,
+    AwsAsrConfigurationError,
+    AwsAsrServiceUnavailableError,
+)
 
 
 class ModelServiceHandler(BaseHTTPRequestHandler):
     """HTTP request handler for internal model inference RPCs."""
 
     pipeline = SpeechToSignPipeline()
-    asr_engine = StreamingAsrEngine()
+    asr_engine: AsrEngineProtocol = create_asr_engine()
+
+    @classmethod
+    def get_engine(cls, backend_override: str | None = None) -> AsrEngineProtocol:
+        """Resolve ASR engine, supporting per-request backend selection without silent fallback."""
+        if backend_override:
+            return create_asr_engine(backend=backend_override)
+        return cls.asr_engine
 
     def _send_json(self, status: int, data: dict[str, Any]) -> None:
         payload = json.dumps(data).encode("utf-8")
@@ -29,6 +43,19 @@ class ModelServiceHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def _handle_asr_error(self, err: Exception) -> None:
+        """Map typed ASR exceptions to explicit HTTP status codes and payloads."""
+        if isinstance(err, AwsAsrAuthError):
+            self._send_json(503, {"ok": False, "error": str(err), "code": "AUTHENTICATION_FAILED"})
+        elif isinstance(err, AwsAsrServiceUnavailableError):
+            self._send_json(503, {"ok": False, "error": str(err), "code": "SERVICE_UNAVAILABLE"})
+        elif isinstance(err, (AwsAsrConfigurationError, AsrAudioDecodingError)):
+            self._send_json(400, {"ok": False, "error": str(err), "code": getattr(err, "code", "BAD_REQUEST")})
+        elif isinstance(err, AsrError):
+            self._send_json(500, {"ok": False, "error": str(err), "code": getattr(err, "code", "ASR_ERROR")})
+        else:
+            self._send_json(500, {"ok": False, "error": f"ASR failure: {err}", "code": "INTERNAL_ERROR"})
 
     def do_GET(self) -> None:
         if self.path in ("/health", "/"):
@@ -87,18 +114,21 @@ class ModelServiceHandler(BaseHTTPRequestHandler):
             audio_b64 = body.get("audioBase64", "")
             audio_format = body.get("audioFormat", "pcm_s16le")
             session_id = body.get("sessionId", "default_session")
+            backend_override = body.get("backend")
 
             if not audio_b64:
                 self._send_json(400, {"ok": False, "error": "audioBase64 must not be empty"})
                 return
 
-            events = self.asr_engine.process_audio_chunk(
+            engine = self.get_engine(backend_override)
+
+            events = engine.process_audio_chunk(
                 session_id=session_id,
                 audio_data=audio_b64,
                 audio_format=audio_format,
             )
 
-            flushed = self.asr_engine.flush_session(session_id)
+            flushed = engine.flush_session(session_id)
             all_events = events + flushed
 
             final_transcript = ""
@@ -122,19 +152,22 @@ class ModelServiceHandler(BaseHTTPRequestHandler):
                 },
             })
         except Exception as e:  # noqa: BLE001
-            self._send_json(500, {"ok": False, "error": f"ASR transcription failed: {e}"})
+            self._handle_asr_error(e)
 
     def _handle_chunk(self, body: dict[str, Any]) -> None:
         try:
             audio_b64 = body.get("audioBase64", "")
             audio_format = body.get("audioFormat", "pcm_s16le")
             session_id = body.get("sessionId", "default_session")
+            backend_override = body.get("backend")
 
             if not audio_b64:
                 self._send_json(400, {"ok": False, "error": "audioBase64 must not be empty"})
                 return
 
-            events = self.asr_engine.process_audio_chunk(
+            engine = self.get_engine(backend_override)
+
+            events = engine.process_audio_chunk(
                 session_id=session_id,
                 audio_data=audio_b64,
                 audio_format=audio_format,
@@ -148,12 +181,15 @@ class ModelServiceHandler(BaseHTTPRequestHandler):
                 },
             })
         except Exception as e:  # noqa: BLE001
-            self._send_json(500, {"ok": False, "error": f"Audio chunk processing failed: {e}"})
+            self._handle_asr_error(e)
 
     def _handle_flush(self, body: dict[str, Any]) -> None:
         try:
             session_id = body.get("sessionId", "default_session")
-            events = self.asr_engine.flush_session(session_id)
+            backend_override = body.get("backend")
+            engine = self.get_engine(backend_override)
+
+            events = engine.flush_session(session_id)
 
             self._send_json(200, {
                 "ok": True,
@@ -163,7 +199,7 @@ class ModelServiceHandler(BaseHTTPRequestHandler):
                 },
             })
         except Exception as e:  # noqa: BLE001
-            self._send_json(500, {"ok": False, "error": f"Session flush failed: {e}"})
+            self._handle_asr_error(e)
 
     def _handle_audio_to_sign(self, body: dict[str, Any]) -> None:
         try:
@@ -171,13 +207,20 @@ class ModelServiceHandler(BaseHTTPRequestHandler):
             audio_format = body.get("audioFormat", "pcm_s16le")
             session_id = body.get("sessionId", "default_session")
             utterance_id = body.get("utteranceId", "utt_001")
+            backend_override = body.get("backend")
 
-            events = self.asr_engine.process_audio_chunk(
+            if not audio_b64:
+                self._send_json(400, {"ok": False, "error": "audioBase64 must not be empty"})
+                return
+
+            engine = self.get_engine(backend_override)
+
+            events = engine.process_audio_chunk(
                 session_id=session_id,
                 audio_data=audio_b64,
                 audio_format=audio_format,
             )
-            flushed = self.asr_engine.flush_session(session_id)
+            flushed = engine.flush_session(session_id)
             all_events = events + flushed
 
             transcript = all_events[-1].text if all_events else ""
@@ -196,7 +239,7 @@ class ModelServiceHandler(BaseHTTPRequestHandler):
                 },
             })
         except Exception as e:  # noqa: BLE001
-            self._send_json(500, {"ok": False, "error": f"Audio-to-sign pipeline failed: {e}"})
+            self._handle_asr_error(e)
 
 
 def run_server(port: int = 5050) -> None:
