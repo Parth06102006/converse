@@ -28,4 +28,9 @@ export interface SignDetection {
   confidence: number;
   startTimeMs: number;
   endTimeMs: number;
+  id?: string;
+  durationMs?: number;
+  isFingerspelled?: boolean;
+  handDominance?: "left" | "right" | "both";
 }
+
