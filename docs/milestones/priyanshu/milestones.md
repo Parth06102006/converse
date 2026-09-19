@@ -131,10 +131,11 @@ flowchart TD
 - *Recommendation for Evaluation*: Measure extraction latency and landmark stability between MediaPipe Holistic and MediaPipe Tasks API.
 
 ### 1.6 Deliverables and Milestones
-1. `ml/asl-vision/src/landmarks.py`: Unified landmark extraction wrapper with confidence thresholding.
-2. `ml/asl-vision/src/normalization.py`: Mathematical normalization pipeline enforcing translation, scale, and rotation invariance.
-3. `ml/asl-vision/src/filters.py`: One-Euro temporal filter implementation for landmark smoothing.
-4. `ml/asl-vision/tests/test_normalization.py`: Unit tests asserting translation and scale invariance on synthetic landmark data.
+1. `ml/asl-vision/src/asl_vision/landmarks.py` [Completed]: Unified landmark extraction wrapper with confidence thresholding.
+2. `ml/asl-vision/src/asl_vision/normalization.py` [Completed]: Mathematical normalization pipeline enforcing translation, scale, and rotation invariance.
+3. `ml/asl-vision/src/asl_vision/filters.py` [Completed]: One-Euro temporal filter implementation for landmark smoothing.
+4. `ml/asl-vision/tests/test_normalization.py` [Completed]: Unit tests asserting translation and scale invariance on synthetic landmark data.
+5. `ml/asl-vision/tests/test_landmarks.py` [Completed]: Unit tests verifying MediaPipe extraction, contour filtering, and contract serialization.
 
 ### 1.7 Verification Criteria
 - Landmark extraction processing rate $\ge 30\text{ FPS}$ on standard CPU.
@@ -181,11 +182,13 @@ Sign language is governed by the spatial graph of the human skeleton over time.
   - Gaussian joint coordinate jitter ($\sigma = 0.005$).
 
 ### 2.5 Deliverables and Milestones
-1. `ml/asl-vision/src/models/stgcn.py`: PyTorch implementation of Spatial-Temporal Graph Convolutional Network.
-2. `ml/asl-vision/src/dataset.py`: Dataset loader parsing WLASL landmark JSONs with augmentations.
-3. `ml/asl-vision/src/sliding_window.py`: Real-time sliding window buffer with trigger thresholding.
-4. `ml/asl-vision/scripts/train.py`: Training harness with wandb logging and checkpointing.
-5. `ml/asl-vision/scripts/export_onnx.py`: ONNX export script optimizing model for edge inference.
+1. `ml/asl-vision/src/asl_vision/models/stgcn.py` [Completed]: PyTorch implementation of Spatial-Temporal Graph Convolutional Network with 75-node anatomical graph and column in-degree normalized directed spatial partitions.
+2. `ml/asl-vision/src/asl_vision/dataset.py` [Completed]: Dataset loader handling variable-length landmark sequences, temporal resampling to T=30, spatial augmentations, and batch collation.
+3. `ml/asl-vision/src/asl_vision/sliding_window.py` [Completed]: Real-time FIFO sliding window buffer (W=30 frames, S=5 stride) with landmark presence confidence tracking.
+4. `ml/asl-vision/src/asl_vision/engine.py` [Completed]: Real-time ASL vision perception engine running landmark extraction, normalization, sliding window buffer, and ST-GCN inference to emit discrete `SignDetection` events conforming to `@converse/contracts`.
+5. `ml/asl-vision/scripts/train.py` [Completed]: Supervised training pipeline with CosineAnnealingLR, evaluation metrics, and checkpointing.
+6. `ml/asl-vision/scripts/export_onnx.py` [Completed]: ONNX export harness supporting dynamic batch dimensions and numerical parity assertions.
+7. Unit test suites [Completed]: `test_sliding_window.py`, `test_stgcn.py`, `test_dataset.py`, `test_engine.py`, `test_export_onnx.py`, `test_train.py` (116 tests passing).
 
 ### 2.6 Verification Criteria
 - Validation Top-1 accuracy $\ge 72\%$ and Top-5 accuracy $\ge 88\%$ on WLASL-100 validation split with unseen signers.
