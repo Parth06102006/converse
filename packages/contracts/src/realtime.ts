@@ -1,5 +1,9 @@
 import type { DomainError } from "./result.js";
-import type { SignToken } from "./translation.js";
+import type {
+  AslGlossToken,
+  SignRepresentation,
+  SignToken,
+} from "./translation.js";
 import type { FrameLandmarks, SignDetection } from "./vision.js";
 
 export type RealtimeDirection = "sign_to_speech" | "speech_to_sign";
@@ -68,6 +72,8 @@ export interface TranslationResultPayload {
   direction: RealtimeDirection;
   text?: string;
   tokens?: SignToken[];
+  aslTokens?: AslGlossToken[];
+  representation?: SignRepresentation;
   confidence: number;
   status: "partial" | "final";
   latencyMs: number;

@@ -1,12 +1,15 @@
 import cors from "cors";
 import express, { type Express, type Request, type Response } from "express";
 import type {
+  AsrRequest,
+  AsrResponse,
   HealthCheckResponse,
   SignToTextRequest,
   SignToTextResponse,
   TextToSignRequest,
   TextToSignResponse,
 } from "@converse/contracts";
+import { transcribeSpeech, translateSpeechToSign } from "./speech-to-sign.js";
 
 export function createApp(): Express {
   const app: Express = express();
@@ -82,22 +85,28 @@ export function createApp(): Express {
 
   app.post(
     "/api/speech-to-sign/translate",
-    (req: Request<unknown, unknown, TextToSignRequest>, res: Response) => {
-      const { englishText = "" } = req.body;
-      const words = englishText.trim().split(/\s+/).filter(Boolean);
+    async (
+      req: Request<unknown, unknown, TextToSignRequest>,
+      res: Response,
+    ) => {
+      const result = await translateSpeechToSign(req.body);
+      if (result.ok) {
+        res.json(result.value);
+      } else {
+        res.status(400).json({ ok: false, error: result.error });
+      }
+    },
+  );
 
-      const tokens = words.map((word) => ({
-        gloss: word.toUpperCase(),
-        durationMs: 400,
-      }));
-
-      const response: TextToSignResponse = {
-        tokens,
-        totalDurationMs: tokens.reduce((acc, curr) => acc + curr.durationMs, 0),
-        latencyMs: 8,
-      };
-
-      res.json(response);
+  app.post(
+    "/api/speech/asr",
+    async (req: Request<unknown, unknown, AsrRequest>, res: Response) => {
+      const result = await transcribeSpeech(req.body);
+      if (result.ok) {
+        res.json(result.value);
+      } else {
+        res.status(400).json({ ok: false, error: result.error });
+      }
     },
   );
 

@@ -3,8 +3,7 @@ export type Result<T, E = DomainError> =
   | { readonly ok: false; readonly error: E };
 
 export type Option<T> =
-  | { readonly some: true; readonly value: T }
-  | { readonly some: false };
+  { readonly some: true; readonly value: T } | { readonly some: false };
 
 export type ErrorComponent =
   | "camera"
