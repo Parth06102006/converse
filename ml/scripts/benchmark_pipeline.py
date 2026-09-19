@@ -1,7 +1,8 @@
 """End-to-end pipeline verification and latency benchmarking suite.
 
 Tests full path:
-Real Audio In -> VAD -> Streaming ASR -> Grammar -> NMM -> Spatial Loci -> SignRepresentation Out
+Real Audio In -> Audio Preprocessing -> VAD -> Streaming ASR -> Grammar -> NMM -> Spatial Loci -> SignRepresentation Out
+
 Benchmarks:
 1. Streaming chunk ingestion latency (per 200ms chunk)
 2. Speech-to-Sign translation compilation latency
@@ -9,8 +10,10 @@ Benchmarks:
 4. Canonical schema validation against @converse/contracts
 """
 
+import argparse
 import base64
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -26,7 +29,9 @@ sys.path.insert(0, str(ROOT / "translation" / "src"))
 from translation.pipeline import SpeechToSignPipeline
 from translation.representation_emitter import SignRepresentation
 
-from asr.engine import StreamingAsrEngine
+from asr.config import AsrEngineConfig
+from asr.engine import create_asr_engine
+from asr.exceptions import AwsAsrAuthError, AwsAsrServiceUnavailableError
 
 AUDIO_PATH = ROOT / "asr" / "tests" / "data" / "speech_sample_16k.wav"
 
@@ -95,7 +100,8 @@ def validate_sign_representation_schema(rep: SignRepresentation) -> list[str]:
     return errors
 
 
-def run_e2e_benchmark(num_iterations: int = 5) -> None:
+def run_e2e_benchmark(backend_name: str | None = None, num_iterations: int = 5) -> None:
+    backend = backend_name or os.environ.get("ASR_BACKEND", "aws")
     cpu_model = get_cpu_model()
     print("==================================================")
     print("End-to-End Speech-to-Sign Pipeline Benchmark")
@@ -103,6 +109,7 @@ def run_e2e_benchmark(num_iterations: int = 5) -> None:
     print(f"Hardware Platform:    {cpu_model}")
     print(f"Python Environment:   {platform.python_version()} ({platform.system()} {platform.machine()})")
     print(f"Input Audio Dataset:  {AUDIO_PATH.name}")
+    print(f"Selected ASR Backend: {backend.upper()}")
 
     if not AUDIO_PATH.exists():
         print(f"ERROR: Audio dataset missing at {AUDIO_PATH}")
@@ -119,13 +126,31 @@ def run_e2e_benchmark(num_iterations: int = 5) -> None:
         for i in range(0, len(raw_pcm), chunk_bytes)
     ]
 
-    asr_engine = StreamingAsrEngine()
+    config = AsrEngineConfig(
+        backend=backend,
+        aws_region=os.environ.get("AWS_REGION", "ap-south-1"),
+        aws_transcribe_language=os.environ.get("AWS_TRANSCRIBE_LANGUAGE", "en-IN"),
+    )
+
+    try:
+        asr_engine = create_asr_engine(backend=backend, config=config)
+    except Exception as exc:  # noqa: BLE001
+        print(f"ERROR initializing ASR engine: {exc}")
+        sys.exit(1)
+
     translation_pipeline = SpeechToSignPipeline()
 
-    # Warmup pass
-    asr_engine.process_audio_chunk("warmup_session", audio_chunks[0], "pcm_s16le")
-    asr_engine.flush_session("warmup_session")
-    translation_pipeline.translate("He hoped there would be stew.", "warmup_session", "utt_warmup")
+    try:
+        # Warmup pass
+        asr_engine.process_audio_chunk("warmup_session", audio_chunks[0], "pcm_s16le")
+        asr_engine.flush_session("warmup_session")
+        translation_pipeline.translate("He hoped there would be stew.", "warmup_session", "utt_warmup")
+    except (AwsAsrAuthError, AwsAsrServiceUnavailableError) as exc:
+        print(f"\nASR Backend Error ({backend.upper()}): {exc}")
+        print("Note: In production (ASR_BACKEND=aws), errors are explicit and do not silently fall back to mock/Whisper.")
+        if hasattr(asr_engine, "close"):
+            asr_engine.close()
+        return
 
     chunk_latencies_ms: list[float] = []
     flush_latencies_ms: list[float] = []
@@ -177,6 +202,9 @@ def run_e2e_benchmark(num_iterations: int = 5) -> None:
         if sample_rep is None:
             sample_rep = rep
 
+    if hasattr(asr_engine, "close"):
+        asr_engine.close()
+
     assert sample_rep is not None
 
     # Schema validation against canonical contracts
@@ -222,4 +250,12 @@ def run_e2e_benchmark(num_iterations: int = 5) -> None:
 
 
 if __name__ == "__main__":
-    run_e2e_benchmark()
+    parser = argparse.ArgumentParser(description="End-to-End Pipeline Verification")
+    parser.add_argument(
+        "--backend",
+        choices=["aws", "whisper", "mock"],
+        default=os.environ.get("ASR_BACKEND", "aws"),
+        help="ASR backend to use ('aws' or 'whisper')",
+    )
+    args = parser.parse_args()
+    run_e2e_benchmark(backend_name=args.backend)
