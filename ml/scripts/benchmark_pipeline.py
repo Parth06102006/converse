@@ -254,7 +254,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--backend",
         choices=["aws", "whisper", "mock"],
-        default=os.environ.get("ASR_BACKEND", "aws"),
+        default=os.environ.get("ASR_BACKEND", "whisper"),
         help="ASR backend to use ('aws' or 'whisper')",
     )
     args = parser.parse_args()

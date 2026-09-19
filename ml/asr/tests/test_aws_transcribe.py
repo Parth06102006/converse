@@ -158,7 +158,7 @@ class TestAwsTranscribeConfiguration:
 
     def test_default_configuration(self) -> None:
         config = AsrEngineConfig()
-        assert config.backend == "aws"
+        assert config.backend == "whisper"
         assert config.aws_region == "ap-south-1"
         assert config.aws_transcribe_language == "en-IN"
         assert config.sample_rate == 16000
@@ -166,10 +166,12 @@ class TestAwsTranscribeConfiguration:
 
     def test_custom_configuration(self) -> None:
         config = AsrEngineConfig(
+            backend="aws",
             aws_region="us-east-1",
             aws_transcribe_language="en-US",
             sample_rate=16000,
         )
+        assert config.backend == "aws"
         assert config.aws_region == "us-east-1"
         assert config.aws_transcribe_language == "en-US"
 
@@ -530,6 +532,11 @@ class TestEngineFactory:
 
     def test_create_whisper_engine(self) -> None:
         engine = create_asr_engine(backend="whisper")
+        from asr.engine import WhisperAsrEngine
+        assert isinstance(engine, WhisperAsrEngine)
+
+    def test_create_default_engine(self) -> None:
+        engine = create_asr_engine()
         from asr.engine import WhisperAsrEngine
         assert isinstance(engine, WhisperAsrEngine)
 

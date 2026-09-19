@@ -2,6 +2,32 @@
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
+
+
+def _load_dotenv_if_present() -> None:
+    """Optionally load environment variables from .env file if present without overriding existing env."""
+    for candidate in [
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parent.parent.parent.parent / ".env",
+    ]:
+        if candidate.is_file():
+            try:
+                with open(candidate, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            key, val = line.split("=", 1)
+                            key = key.strip()
+                            val = val.strip().strip("\"'")
+                            if key and key not in os.environ:
+                                os.environ[key] = val
+                break
+            except (OSError, UnicodeDecodeError):
+                continue
+
+
+_load_dotenv_if_present()
 
 
 @dataclass(frozen=True)
@@ -9,7 +35,7 @@ class AsrEngineConfig:
     """Unified configuration for ASR engines."""
 
     backend: str = field(
-        default_factory=lambda: os.environ.get("ASR_BACKEND", "aws").strip().lower()
+        default_factory=lambda: os.environ.get("ASR_BACKEND", "whisper").strip().lower()
     )
     aws_region: str = field(
         default_factory=lambda: os.environ.get("AWS_REGION", "ap-south-1").strip()

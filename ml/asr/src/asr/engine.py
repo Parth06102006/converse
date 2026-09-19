@@ -451,11 +451,11 @@ def create_asr_engine(
 ) -> AsrEngineProtocol:
     """Factory creating provider-independent ASR engine based on configuration.
 
-    Default backend is 'aws' in production.
-    Explicit 'whisper' selects local Faster-Whisper.
+    Default backend is 'whisper' in local development.
+    Explicit 'aws' selects Amazon Transcribe Streaming.
     """
     cfg = config or AsrEngineConfig()
-    selected_backend = (backend or cfg.backend or "aws").strip().lower()
+    selected_backend = (backend or cfg.backend or "whisper").strip().lower()
 
     if selected_backend == "aws":
         from asr.aws_transcribe import AwsTranscribeStreamingEngine
