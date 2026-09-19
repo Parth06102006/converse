@@ -8,7 +8,15 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "mediapipe>=1.0.1",
+    "numpy>=2.5.3",
+    "onnx>=1.22.0",
+    "onnxruntime>=1.30.0",
+    "onnxscript>=0.7.2",
+    "opencv-python-headless>=5.0.0.93",
     "pytest>=9.1.1",
+    "scipy>=1.18.1",
+    "torch>=2.14.0",
 ]
 
 [project.scripts]
@@ -22,3 +30,7 @@ build-backend = "uv_build"
 dev = [
     "ruff>=0.16.8",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "src"]
+

@@ -30,6 +30,8 @@ venv/
 *.pth
 *.ckpt
 *.safetensors
+*.task
+*.onnx
 models/checkpoints/*
 !models/checkpoints/.gitkeep
 
