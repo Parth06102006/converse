@@ -81,3 +81,82 @@ def test_gloss_stabilizer_boundary_pause() -> None:
     flushed = stabilizer.check_boundary(1100.0)
     assert flushed == ["THANK-YOU"]
     assert len(stabilizer.buffer) == 0
+
+
+def test_reconstruct_consecutive_duplicate_collapse() -> None:
+    # Holding sign causes consecutive duplicates; sentence reconstruction collapses them
+    assert reconstruct_sentence(["THANK-YOU", "THANK-YOU", "THANK-YOU"]) == "Thank you!"
+    assert reconstruct_sentence(["YES", "YES", "YES", "YES"]) == "Yes."
+    assert reconstruct_sentence(["HELLO", "HELLO"]) == "Hello!"
+    assert reconstruct_sentence(["GOOD", "GOOD"]) == "Good!"
+    assert reconstruct_sentence(["THANK-YOU", "THANK-YOU", "HELP", "HELP"]) == "Thank you for your help."
+
+
+def test_gloss_stabilizer_single_stroke_hold_lock() -> None:
+    stabilizer = PythonGlossStabilizer(
+        min_confidence=0.5,
+        debounce_window_ms=400.0,
+        boundary_pause_ms=850.0,
+        stroke_cooldown_ms=450.0,
+    )
+
+    # User holds THANK-YOU sign continuously for 2.5 seconds (25 detections every 100ms)
+    for i in range(25):
+        t_start = 100.0 + i * 100.0
+        t_end = t_start + 50.0
+        det = SignDetection("THANK-YOU", 0.85, t_start, t_end)
+        accepted, is_dup, gloss = stabilizer.process_detection(det)
+
+        if i == 0:
+            assert accepted is True
+            assert is_dup is False
+            assert gloss == "THANK-YOU"
+        else:
+            # All subsequent frames during the same continuous hold MUST be suppressed
+            assert accepted is True
+            assert is_dup is True
+            assert gloss is None
+
+    # Buffer should contain ONLY ONE entry
+    assert stabilizer.buffer == ["THANK-YOU"]
+
+    # Boundary pause before cooldown (hand still held / recent)
+    assert stabilizer.check_boundary(2600.0) is None
+
+    # 900ms after last activity (2550 + 900 = 3450) -> triggers flush
+    flushed = stabilizer.check_boundary(3450.0)
+    assert flushed == ["THANK-YOU"]
+    assert len(stabilizer.buffer) == 0
+
+
+def test_gloss_stabilizer_sign_transition() -> None:
+    stabilizer = PythonGlossStabilizer(
+        min_confidence=0.5,
+        debounce_window_ms=400.0,
+        boundary_pause_ms=850.0,
+        stroke_cooldown_ms=450.0,
+    )
+
+    # First sign: HELLO
+    stabilizer.process_detection(SignDetection("HELLO", 0.9, 100.0, 200.0))
+    stabilizer.process_detection(SignDetection("HELLO", 0.9, 210.0, 300.0))
+
+    # Second sign: NICE (transition immediately registers)
+    acc, is_dup, gloss = stabilizer.process_detection(SignDetection("NICE", 0.85, 350.0, 400.0))
+    assert acc is True
+    assert is_dup is False
+    assert gloss == "NICE"
+
+    # Third sign: MEET
+    stabilizer.process_detection(SignDetection("MEET", 0.88, 450.0, 500.0))
+
+    # Fourth sign: YOU
+    stabilizer.process_detection(SignDetection("YOU", 0.91, 550.0, 600.0))
+
+    assert stabilizer.buffer == ["HELLO", "NICE", "MEET", "YOU"]
+
+    # Sentence boundary flush
+    flushed = stabilizer.check_boundary(1500.0)
+    assert flushed == ["HELLO", "NICE", "MEET", "YOU"]
+    assert reconstruct_sentence(flushed) == "Hello, nice to meet you."
+

@@ -12,9 +12,12 @@ Integrates:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import queue
 import shutil
+import site
 import subprocess
 import threading
 import time
@@ -23,6 +26,18 @@ import urllib.request
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+
+# Silence Qt font warnings and MediaPipe glog before importing cv2 / mediapipe
+os.environ["QT_LOGGING_RULES"] = "*.debug=false;qt.qpa.*=false;QFontDatabase.warning=false;QFontDatabase.debug=false"
+os.environ["GLOG_minloglevel"] = "2"
+os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
+
+# Ensure cv2/qt/fonts directory exists to permanently silence QFontDatabase missing warnings
+with contextlib.suppress(OSError, AttributeError):
+    for _site_pkg in site.getsitepackages():
+        _cv2_qt = Path(_site_pkg) / "cv2" / "qt"
+        if _cv2_qt.is_dir():
+            (_cv2_qt / "fonts").mkdir(parents=True, exist_ok=True)
 
 import cv2
 import numpy as np
@@ -64,9 +79,11 @@ CANONICAL_PATTERNS: dict[tuple[str, ...], str] = {
     ("THANK-YOU", "VERY", "MUCH"): "Thank you very much.",
     ("WELCOME",): "You are welcome.",
     ("YOU", "WELCOME"): "You are welcome.",
+    ("GOOD",): "Good!",
     ("GOOD", "MORNING"): "Good morning.",
     ("GOOD", "AFTERNOON"): "Good afternoon.",
     ("GOOD", "NIGHT"): "Good night.",
+    ("SEE",): "I see.",
     ("SEE", "YOU", "LATER"): "See you later.",
     ("SEE", "LATER"): "See you later.",
     ("GOODBYE",): "Goodbye.",
@@ -80,6 +97,10 @@ CANONICAL_PATTERNS: dict[tuple[str, ...], str] = {
     ("EXCUSE", "ME"): "Excuse me.",
     ("YES",): "Yes.",
     ("NO",): "No.",
+    ("LOVE",): "I love you.",
+    ("WHAT",): "What?",
+    ("ME",): "Me.",
+    ("YOU",): "You.",
 }
 
 # Irregular verb conjugations
@@ -116,7 +137,7 @@ ZERO_ARTICLE_LOCATIONS = {"SCHOOL", "WORK", "HOME", "CLASS", "BED"}
 class NeuralGestureModel:
     """MediaPipe Tasks neural gesture recognizer running locally on edge camera frames."""
 
-    def __init__(self, model_path: Path | str, min_confidence: float = 0.45) -> None:
+    def __init__(self, model_path: Path | str, min_confidence: float = 0.55) -> None:
         from mediapipe.tasks import python
         from mediapipe.tasks.python import vision
 
@@ -126,9 +147,9 @@ class NeuralGestureModel:
             base_options=base_options,
             running_mode=vision.RunningMode.VIDEO,
             num_hands=2,
-            min_hand_detection_confidence=0.40,
-            min_hand_presence_confidence=0.40,
-            min_tracking_confidence=0.40,
+            min_hand_detection_confidence=0.45,
+            min_hand_presence_confidence=0.45,
+            min_tracking_confidence=0.45,
         )
         self._recognizer = vision.GestureRecognizer.create_from_options(options)
         self.last_neural_label: str | None = None
@@ -138,10 +159,15 @@ class NeuralGestureModel:
     def process_frame(
         self,
         frame_rgb: np.ndarray,
-        extracted_pose: np.ndarray | None,
-        timestamp_ms: float,
+        extracted: Any = None,
+        timestamp_ms: float = 0.0,
+        extracted_pose: np.ndarray | None = None,
     ) -> tuple[SignDetection | None, str | None]:
-        """Runs the neural model and maps gesture + spatial context to SignDetection."""
+        """Runs the neural model and maps gesture + spatial context to SignDetection.
+
+        Uses upper-body pose and 3D face mesh landmarks to anchor hand gestures
+        to precise anatomical signing space regions (chin/lips, forehead, chest).
+        """
         import mediapipe as mp
 
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
@@ -154,11 +180,57 @@ class NeuralGestureModel:
             self.last_neural_desc = None
             return None, None
 
-        # Two-handed gestures check first
+        # Resolve pose and face landmarks from input arguments
+        pose_arr = extracted_pose
+        face_arr = None
+        if extracted is not None:
+            if isinstance(extracted, np.ndarray):
+                pose_arr = extracted
+            else:
+                pose_arr = getattr(extracted, "pose", None)
+                face_arr = getattr(extracted, "face", None)
+
+        # Default anatomical anchors
+        shoulder_y = 0.45
+        nose_y = 0.25
+        chest_x = 0.5
+        shoulder_w = 0.25
+        chin_x = 0.5
+        chin_y = 0.35
+        face_h = 0.18
+
+        if pose_arr is not None and len(pose_arr) >= 13:
+            nose_y = float(pose_arr[0, 1])
+            ls_y = float(pose_arr[11, 1])
+            rs_y = float(pose_arr[12, 1])
+            ls_x = float(pose_arr[11, 0])
+            rs_x = float(pose_arr[12, 0])
+            shoulder_y = (ls_y + rs_y) / 2.0
+            chest_x = (ls_x + rs_x) / 2.0
+            shoulder_w = max(0.12, abs(ls_x - rs_x))
+
+        if face_arr is not None and len(face_arr) >= 153:
+            chin_x = float(face_arr[152, 0])
+            chin_y = float(face_arr[152, 1])
+            fh_y = float(face_arr[10, 1]) if len(face_arr) > 10 else (chin_y - 0.20)
+            face_h = max(0.08, abs(chin_y - fh_y))
+        else:
+            chin_y = nose_y + 0.38 * (shoulder_y - nose_y)
+            chin_x = chest_x
+            face_h = max(0.08, abs(shoulder_y - nose_y))
+
+        # Two-handed gestures check first (e.g. WHAT with both open palms)
         if len(res.gestures) >= 2 and len(res.hand_landmarks) >= 2:
             g0 = res.gestures[0][0]
             g1 = res.gestures[1][0]
-            if g0.category_name == "Open_Palm" and g1.category_name == "Open_Palm":
+            lm0 = res.hand_landmarks[0]
+            lm1 = res.hand_landmarks[1]
+            if (
+                lm0[0].y < 0.75
+                and lm1[0].y < 0.75
+                and g0.category_name == "Open_Palm"
+                and g1.category_name == "Open_Palm"
+            ):
                 score = (g0.score + g1.score) / 2.0
                 if score >= self.min_confidence:
                     self.last_neural_label = "WHAT"
@@ -184,66 +256,70 @@ class NeuralGestureModel:
                 continue
 
             lms = res.hand_landmarks[i]
-            wrist_y = lms[0].y
-            tip_y = lms[8].y  # index tip
-            tip_x = lms[8].x
+            wrist_x = float(lms[0].x)
+            wrist_y = float(lms[0].y)
+            tip_x = float(lms[8].x)  # index tip
+            tip_y = float(lms[8].y)
+            mid_tip_x = float(lms[12].x)  # middle tip
+            mid_tip_y = float(lms[12].y)
 
-            # Reference pose coordinates
-            shoulder_y = 0.45
-            nose_y = 0.25
-            chest_x = 0.5
-            shoulder_w = 0.25
+            # Enforce active signing space: ignore resting hands at bottom of camera frame
+            if wrist_y > 0.75 and tip_y > 0.70:
+                continue
 
-            if extracted_pose is not None and len(extracted_pose) >= 13:
-                nose_y = float(extracted_pose[0, 1])
-                ls_y = float(extracted_pose[11, 1])
-                rs_y = float(extracted_pose[12, 1])
-                ls_x = float(extracted_pose[11, 0])
-                rs_x = float(extracted_pose[12, 0])
-                shoulder_y = (ls_y + rs_y) / 2.0
-                chest_x = (ls_x + rs_x) / 2.0
-                shoulder_w = max(0.1, abs(ls_x - rs_x))
-
-            # Map neural gesture category + anatomical position
             gloss: str | None = None
             desc = ""
 
             if cat == "Open_Palm":
-                chin_y = nose_y + 0.35 * (shoulder_y - nose_y)
-                if abs(wrist_y - chin_y) < 0.20 * shoulder_w or abs(tip_y - chin_y) < 0.25 * shoulder_w:
+                # Compute Euclidean 2D distance between hand fingertips / wrist and chin anchor
+                dist_tips_to_chin = min(
+                    float(np.hypot(tip_x - chin_x, tip_y - chin_y)),
+                    float(np.hypot(mid_tip_x - chin_x, mid_tip_y - chin_y)),
+                    float(np.hypot(wrist_x - chin_x, wrist_y - chin_y)),
+                )
+                # THANK-YOU: hand touches or is in immediate proximity to chin/lips
+                if dist_tips_to_chin < 0.75 * face_h or dist_tips_to_chin < 0.32 * shoulder_w:
                     gloss = "THANK-YOU"
                     desc = f"Open_Palm at Chin ({score * 100:.0f}%) -> THANK-YOU"
-                elif wrist_y < shoulder_y or tip_y < shoulder_y:
+                # HELLO: hand is raised at or above head/forehead level
+                elif wrist_y < shoulder_y or tip_y < chin_y:
                     gloss = "HELLO"
                     desc = f"Open_Palm at Head ({score * 100:.0f}%) -> HELLO"
-                else:
+                # PLEASE: hand is flat on chest center
+                elif abs(tip_x - chest_x) < 0.35 * shoulder_w and wrist_y < 0.72:
                     gloss = "PLEASE"
                     desc = f"Open_Palm on Chest ({score * 100:.0f}%) -> PLEASE"
 
             elif cat == "Pointing_Up":
-                dist_to_chest = ((tip_x - chest_x) ** 2 + (tip_y - shoulder_y) ** 2) ** 0.5
+                dist_to_chest = float(np.hypot(tip_x - chest_x, tip_y - shoulder_y))
                 if dist_to_chest < 0.28 * shoulder_w:
                     gloss = "ME"
                     desc = f"Pointing to Chest ({score * 100:.0f}%) -> ME"
-                else:
+                elif wrist_y < 0.72:
                     gloss = "YOU"
                     desc = f"Pointing at Camera ({score * 100:.0f}%) -> YOU"
 
             elif cat == "Thumb_Up":
-                gloss = "GOOD"
-                desc = f"Thumb_Up ({score * 100:.0f}%) -> GOOD"
+                if wrist_y < 0.72:
+                    gloss = "GOOD"
+                    desc = f"Thumb_Up ({score * 100:.0f}%) -> GOOD"
 
             elif cat == "Victory":
-                gloss = "SEE"
-                desc = f"Victory / Two Fingers ({score * 100:.0f}%) -> SEE"
+                if wrist_y < 0.72:
+                    gloss = "SEE"
+                    desc = f"Victory / Two Fingers ({score * 100:.0f}%) -> SEE"
 
             elif cat == "ILoveYou":
-                gloss = "LOVE"
-                desc = f"I-L-Y Sign ({score * 100:.0f}%) -> LOVE"
+                if wrist_y < 0.72:
+                    gloss = "LOVE"
+                    desc = f"I-L-Y Sign ({score * 100:.0f}%) -> LOVE"
 
             elif cat == "Closed_Fist":
-                gloss = "YES"
-                desc = f"Fist ({score * 100:.0f}%) -> YES"
+                # In ASL, YES is a raised fist nodding in front of the upper body.
+                # Strictly reject resting fists on table, desk, or lap.
+                if 0.20 < wrist_y < 0.68 and 0.15 < wrist_x < 0.85 and score >= 0.60:
+                    gloss = "YES"
+                    desc = f"Raised Fist in Signing Space ({score * 100:.0f}%) -> YES"
 
             if gloss is not None:
                 self.last_neural_label = gloss
@@ -436,24 +512,32 @@ class KokoroTTSClient:
 
 
 class PythonGlossStabilizer:
-    """Sliding-window debouncer and sentence boundary detector."""
+    """Sliding-window debouncer and sentence boundary detector with single-stroke hold locking."""
 
     def __init__(
         self,
         min_confidence: float = 0.55,
         debounce_window_ms: float = 400.0,
         boundary_pause_ms: float = 850.0,
+        stroke_cooldown_ms: float = 450.0,
     ) -> None:
         self.min_confidence = min_confidence
         self.debounce_window_ms = debounce_window_ms
         self.boundary_pause_ms = boundary_pause_ms
+        self.stroke_cooldown_ms = stroke_cooldown_ms
 
         self.buffer: list[str] = []
         self.last_detection: SignDetection | None = None
-        self.last_emit_time_ms: float = 0.0
+        self.last_activity_time_ms: float = 0.0
+        self.active_stroke_sign: str | None = None
+        self.active_stroke_last_seen_ms: float = 0.0
 
     def process_detection(self, detection: SignDetection) -> tuple[bool, bool, str | None]:
-        """Ingest a candidate detection. Returns (accepted, is_duplicate, stabilized_gloss)."""
+        """Ingest a candidate detection. Returns (accepted, is_duplicate_or_hold, stabilized_gloss).
+
+        Enforces single-stroke hold locking: holding a sign pose continuously in view
+        registers only once and is suppressed until the signer resets or changes signs.
+        """
         if detection.confidence < self.min_confidence:
             return False, False, None
 
@@ -461,27 +545,48 @@ class PythonGlossStabilizer:
         if not normalized:
             return False, False, None
 
-        # Debounce identical sustained consecutive signs
+        current_time_ms = detection.end_time_ms
+
+        # Check if previous stroke expired due to pause / hand lowering
         if (
-            self.last_detection is not None
-            and self.last_detection.gloss.upper() == normalized
-            and (detection.start_time_ms - self.last_detection.end_time_ms) <= self.debounce_window_ms
+            self.active_stroke_sign is not None
+            and (current_time_ms - self.active_stroke_last_seen_ms) > self.stroke_cooldown_ms
         ):
-            self.last_emit_time_ms = detection.end_time_ms
+            self.active_stroke_sign = None
+
+        # If user is continuously holding the exact same sign stroke, suppress duplicate emission
+        if self.active_stroke_sign == normalized:
+            self.active_stroke_last_seen_ms = current_time_ms
+            self.last_activity_time_ms = current_time_ms
+            self.last_detection = detection
             return True, True, None
 
-        # New distinct sign transition
+        # New distinct sign transition or fresh stroke
+        self.active_stroke_sign = normalized
+        self.active_stroke_last_seen_ms = current_time_ms
+        self.last_activity_time_ms = current_time_ms
         self.last_detection = detection
-        self.last_emit_time_ms = detection.end_time_ms
-        self.buffer.append(normalized)
-        return True, False, normalized
+
+        # Deduplicate consecutive identical tokens in the sentence buffer
+        if not self.buffer or self.buffer[-1] != normalized:
+            self.buffer.append(normalized)
+            return True, False, normalized
+
+        return True, True, None
 
     def check_boundary(self, current_time_ms: float) -> list[str] | None:
         """Trigger sentence boundary flush if signer pauses for >= boundary_pause_ms."""
+        # Age out active stroke lock if hand is lowered
+        if (
+            self.active_stroke_sign is not None
+            and (current_time_ms - self.active_stroke_last_seen_ms) > self.stroke_cooldown_ms
+        ):
+            self.active_stroke_sign = None
+
         if (
             len(self.buffer) > 0
-            and self.last_emit_time_ms > 0
-            and (current_time_ms - self.last_emit_time_ms) >= self.boundary_pause_ms
+            and self.last_activity_time_ms > 0
+            and (current_time_ms - self.last_activity_time_ms) >= self.boundary_pause_ms
         ):
             return self.flush()
         return None
@@ -491,21 +596,31 @@ class PythonGlossStabilizer:
         flushed = list(self.buffer)
         self.buffer.clear()
         self.last_detection = None
-        self.last_emit_time_ms = 0.0
+        self.last_activity_time_ms = 0.0
+        self.active_stroke_sign = None
+        self.active_stroke_last_seen_ms = 0.0
         return flushed
 
     def clear(self) -> None:
         """Reset internal buffer state."""
         self.buffer.clear()
         self.last_detection = None
-        self.last_emit_time_ms = 0.0
+        self.last_activity_time_ms = 0.0
+        self.active_stroke_sign = None
+        self.active_stroke_last_seen_ms = 0.0
 
 
 def reconstruct_sentence(glosses: list[str]) -> str:
     """Transforms an ASL gloss sequence into a fluent, grammatical English sentence."""
-    normalized = [g.strip().upper() for g in glosses if g.strip()]
-    if not normalized:
+    raw = [g.strip().upper() for g in glosses if g.strip()]
+    if not raw:
         return ""
+
+    # Collapse consecutive identical tokens: e.g. ["THANK-YOU", "THANK-YOU"] -> ["THANK-YOU"]
+    normalized: list[str] = []
+    for g in raw:
+        if not normalized or normalized[-1] != g:
+            normalized.append(g)
 
     # 1. Exact Canonical Idioms Match
     key = tuple(normalized)
@@ -648,7 +763,7 @@ def reconstruct_sentence(glosses: list[str]) -> str:
 
 
 def draw_landmarks(frame: np.ndarray, extracted: Any) -> None:
-    """Draw anatomical bones and joint circles over the video frame."""
+    """Draw anatomical bones, joint circles, and facial tracking anchors."""
     h, w, _ = frame.shape
 
     # 1. Pose connections (cyan/yellow)
@@ -688,6 +803,32 @@ def draw_landmarks(frame: np.ndarray, extracted: Any) -> None:
             x, y = int(p[0] * w), int(p[1] * h)
             cv2.circle(frame, (x, y), 3, (255, 0, 255), -1)
 
+    # 4. Face mesh key anchors & contours (subtle visual confirmation)
+    if extracted.face is not None and len(extracted.face) >= 153:
+        # Chin anchor (152) highlighted in bright yellow
+        chin = extracted.face[152]
+        cx, cy = int(chin[0] * w), int(chin[1] * h)
+        cv2.circle(frame, (cx, cy), 6, (0, 255, 255), -1)
+
+        # Nose bridge anchor (1) highlighted in green
+        nose = extracted.face[1]
+        nx, ny = int(nose[0] * w), int(nose[1] * h)
+        cv2.circle(frame, (nx, ny), 4, (0, 255, 100), -1)
+
+        # Lips outline points in cyan
+        for lip_idx in (61, 291, 0, 17, 13, 14):
+            if lip_idx < len(extracted.face):
+                lp = extracted.face[lip_idx]
+                lx, ly = int(lp[0] * w), int(lp[1] * h)
+                cv2.circle(frame, (lx, ly), 3, (255, 220, 0), -1)
+
+        # Eyebrows in orange (NMM tracking indicator)
+        for eb_idx in (70, 107, 300, 336):
+            if eb_idx < len(extracted.face):
+                ep = extracted.face[eb_idx]
+                ex, ey = int(ep[0] * w), int(ep[1] * h)
+                cv2.circle(frame, (ex, ey), 3, (0, 165, 255), -1)
+
 
 def draw_hud(
     frame: np.ndarray,
@@ -701,6 +842,7 @@ def draw_hud(
     tts_client: KokoroTTSClient,
     tick: int,
     neural_desc: str | None = None,
+    face_tracked: bool = False,
 ) -> None:
     """Render telemetry diagnostics heads-up display and real-time subtitle cards."""
     h, w, _ = frame.shape
@@ -714,7 +856,12 @@ def draw_hud(
     cv2.putText(frame, f"FPS: {fps:.1f}", (16, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 200), 2)
     tts_status = f"Kokoro TTS: {'SPEAKING' if tts_client.is_speaking else 'ONLINE'} ({tts_client.voice})" if tts_client.enabled else "TTS: DISABLED"
     tts_color = (0, 255, 100) if tts_client.is_speaking else (0, 200, 255) if tts_client.enabled else (120, 120, 120)
-    cv2.putText(frame, tts_status, (150, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.55, tts_color, 2)
+    cv2.putText(frame, tts_status, (130, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.52, tts_color, 2)
+
+    # Face Tracking Badge
+    face_str = "FACE: 3D TRACKED" if face_tracked else "FACE: NONE"
+    face_col = (0, 255, 120) if face_tracked else (120, 120, 120)
+    cv2.putText(frame, face_str, (w - 470, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.50, face_col, 2)
 
     # Sliding window progress bar
     fill_ratio = min(buffer_len / max(window_size, 1), 1.0)
@@ -724,21 +871,22 @@ def draw_hud(
     cv2.rectangle(frame, (bar_x, bar_y), (bar_x + int(bar_width * fill_ratio), bar_y + 16), (0, 200, 255), -1)
     cv2.putText(frame, f"Buffer: {buffer_len}/{window_size}", (bar_x + bar_width + 10, bar_y + 13), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1)
 
-    # Top-right detection indicator
+    # Neural active spatial description
     if neural_desc:
-        cv2.putText(frame, neural_desc, (w - 460, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 120), 2)
+        cv2.putText(frame, neural_desc, (w - 470, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 255, 200), 1)
 
+    # Top-right detection indicator
     if last_detection is not None and time_since_detection_ms < 2000:
         det_text = f"DETECTED: {last_detection.gloss.upper()} ({last_detection.confidence * 100:.0f}%)"
-        text_size = cv2.getTextSize(det_text, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)[0]
-        rx = w - text_size[0] - 20
-        cv2.putText(frame, det_text, (rx, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 120), 2)
+        text_size = cv2.getTextSize(det_text, cv2.FONT_HERSHEY_SIMPLEX, 0.60, 2)[0]
+        rx = w - text_size[0] - 16
+        cv2.putText(frame, det_text, (rx, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (0, 255, 120), 2)
     else:
-        cv2.putText(frame, "Awaiting Sign Gestures...", (w - 240, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (130, 130, 130), 1)
+        cv2.putText(frame, "Awaiting Sign...", (w - 180, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (130, 130, 130), 1)
 
     # 2. Side Sign Reference Card Overlay
     card_w = 260
-    card_h = 162
+    card_h = 175
     card_x = 16
     card_y = 86
     card_overlay = frame.copy()
@@ -748,17 +896,19 @@ def draw_hud(
 
     cv2.putText(frame, "SIGN GESTURE GUIDE", (card_x + 10, card_y + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 220, 255), 1)
     guides = (
-        ("Wave Open Palm", "HELLO"),
+        ("Wave at Head", "HELLO"),
         ("Point at Camera", "YOU"),
         ("Point at Chest", "ME"),
         ("Open Palm at Chin", "THANK-YOU"),
+        ("Raised Fist", "YES"),
+        ("Open Palm on Chest", "PLEASE"),
         ("Thumbs Up", "GOOD"),
         ("Peace / V-Sign", "SEE"),
         ("I-Love-You Sign", "LOVE"),
     )
     for idx, (gesture_str, gloss_str) in enumerate(guides):
-        gy = card_y + 38 + idx * 16
-        cv2.putText(frame, f"{gesture_str} -> {gloss_str}", (card_x + 10, gy), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (210, 210, 210), 1)
+        gy = card_y + 36 + idx * 15
+        cv2.putText(frame, f"{gesture_str} -> {gloss_str}", (card_x + 10, gy), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (210, 210, 210), 1)
 
     # 3. Bottom Subtitle Card Overlay
     sub_overlay = frame.copy()
@@ -814,7 +964,12 @@ def run_webcam_demo(
     if tts_client is None:
         tts_client = KokoroTTSClient(enabled=True)
 
-    stabilizer = PythonGlossStabilizer(min_confidence=0.45, debounce_window_ms=350.0, boundary_pause_ms=850.0)
+    stabilizer = PythonGlossStabilizer(
+        min_confidence=0.55,
+        debounce_window_ms=400.0,
+        boundary_pause_ms=850.0,
+        stroke_cooldown_ms=450.0,
+    )
 
     print(f"Opening camera index {camera_id}...")
     cap = cv2.VideoCapture(camera_id)
@@ -869,7 +1024,7 @@ def run_webcam_demo(
             if neural_model is not None:
                 neural_det, neural_desc = neural_model.process_frame(
                     frame_rgb=frame_rgb,
-                    extracted_pose=extracted.pose,
+                    extracted=extracted,
                     timestamp_ms=timestamp_ms,
                 )
 
@@ -882,7 +1037,7 @@ def run_webcam_demo(
                 last_detection = active_det
                 last_detection_wall_time = current_time
 
-                # 4. Stabilizer & Debouncer
+                # 4. Stabilizer & Single-Stroke Lock
                 accepted, is_dup, gloss = stabilizer.process_detection(active_det)
                 if accepted and not is_dup and gloss:
                     src = "Neural Gesture Model" if active_det == neural_det else "ST-GCN"
@@ -892,14 +1047,16 @@ def run_webcam_demo(
             flushed = stabilizer.check_boundary(timestamp_ms)
             if flushed:
                 sentence = reconstruct_sentence(flushed)
-                last_reconstructed = sentence
-                print(f"[Reconstruction] Finalized Sentence: \"{sentence}\"")
-                print(f"[TTS] Synthesizing speech via Kokoro ({tts_client.voice})...")
-                tts_client.speak(sentence)
+                if sentence:
+                    last_reconstructed = sentence
+                    print(f"[Reconstruction] Finalized Sentence: \"{sentence}\"")
+                    print(f"[TTS] Synthesizing speech via Kokoro ({tts_client.voice})...")
+                    tts_client.speak(sentence)
 
             # 6. Render HUD and Subtitles
             draw_landmarks(frame, extracted)
             time_since_ms = (current_time - last_detection_wall_time) * 1000.0
+            face_tracked = extracted.face is not None and len(extracted.face) > 0
             draw_hud(
                 frame=frame,
                 fps=fps,
@@ -912,6 +1069,7 @@ def run_webcam_demo(
                 tts_client=tts_client,
                 tick=tick,
                 neural_desc=neural_desc,
+                face_tracked=face_tracked,
             )
 
             cv2.imshow(window_name, frame)
@@ -929,9 +1087,10 @@ def run_webcam_demo(
                 if stabilizer.buffer:
                     flushed = stabilizer.flush()
                     sentence = reconstruct_sentence(flushed)
-                    last_reconstructed = sentence
-                    print(f"[Manual Trigger] Spoken: \"{sentence}\"")
-                    tts_client.speak(sentence)
+                    if sentence:
+                        last_reconstructed = sentence
+                        print(f"[Manual Trigger] Spoken: \"{sentence}\"")
+                        tts_client.speak(sentence)
             elif key == ord("t"):
                 tts_client.enabled = not tts_client.enabled
                 print(f"Kokoro TTS audio output: {'ENABLED' if tts_client.enabled else 'DISABLED'}")
@@ -1010,7 +1169,7 @@ def parse_args(args: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--min-confidence",
         type=float,
-        default=0.40,
+        default=0.55,
         help="Minimum confidence threshold for sign detection emission.",
     )
     return parser.parse_args(args)

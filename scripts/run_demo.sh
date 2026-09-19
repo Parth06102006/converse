@@ -45,7 +45,7 @@ Options:
                          Options: af_sky, af_sarah, am_adam, bf_emma.
   --no-tts               Disable speech synthesis entirely.
   --checkpoint <PATH>    Path to trained PyTorch ST-GCN .pt checkpoint.
-  --min-confidence <NUM> Minimum sign detection confidence (default: 0.40).
+  --min-confidence <NUM> Minimum sign detection confidence (default: 0.55).
   -h, --help             Display this help message and exit.
 
 Keyboard Controls inside OpenCV Window:
@@ -265,6 +265,14 @@ fi
 echo "Starting Converse ASL Vision & Speech pipeline..."
 echo "Press 'q' or ESC in the OpenCV window to exit cleanly."
 echo "--------------------------------------------------------"
+
+# Silence Qt font warnings and MediaPipe glog before execution
+export QT_LOGGING_RULES="*.debug=false;qt.qpa.*=false;QFontDatabase.warning=false;QFontDatabase.debug=false"
+export GLOG_minloglevel="2"
+export OPENCV_LOG_LEVEL="ERROR"
+
+# Ensure Qt font directory exists if .venv is present
+mkdir -p "$ML_DIR/.venv/lib/python3.12/site-packages/cv2/qt/fonts" 2>/dev/null || true
 
 cd "$ML_DIR"
 
