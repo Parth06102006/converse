@@ -49,11 +49,15 @@ Options:
   -h, --help             Display this help message and exit.
 
 Keyboard Controls inside OpenCV Window:
-  [1] Hello! (Single word idiom)
-  [2] Hello, nice to meet you. (Continuous greeting)
-  [3] Thank you for your help. (Expression)
-  [4] What is your name? (Wh-question inversion)
-  [5] I went to the store. (Tense shift & SVO reconstruction)
+  [1] Hello, nice to meet you. (Continuous greeting)
+  [2] I want to drink water. (Dining scenario)
+  [3] I like eating pizza. (Meal request)
+  [4] What time is the doctor appointment? (Medical inquiry)
+  [5] I need medicine. (Pharmacy request)
+  [6] I am working on the computer. (Tech / Work domain)
+  [7] My family is Deaf. (Deaf community conversation)
+  [8] Where is the bathroom? I need to go. (Navigation request)
+  [H] Toggle Interactive ASL Movement Guide on-screen
   [S] Force finalize and speak active gloss buffer
   [R] Reset buffer and clear subtitle card
   [V] Cycle through Kokoro neural voice styles
@@ -257,6 +261,15 @@ if [ ! -f "$GESTURE_ASSET" ]; then
     curl -sSL "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task" \
         -o "$GESTURE_ASSET"
     echo "Gesture Recognizer model asset downloaded successfully."
+fi
+
+TGCN_ASSET="$ML_DIR/models/tgcn_asl100.bin"
+if [ ! -f "$TGCN_ASSET" ]; then
+    echo "Downloading pretrained WLASL-100 TGCN model asset (~3.5MB)..."
+    mkdir -p "$ML_DIR/models"
+    curl -sSL "https://huggingface.co/sharonn18/tgcn-wlasl/resolve/main/checkpoints/asl100/pytorch_model.bin" \
+        -o "$TGCN_ASSET"
+    echo "TGCN model asset downloaded successfully."
 fi
 
 # ------------------------------------------------------------------------------

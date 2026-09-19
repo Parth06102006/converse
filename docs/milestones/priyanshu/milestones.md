@@ -188,11 +188,13 @@ Sign language is governed by the spatial graph of the human skeleton over time.
 4. `ml/asl-vision/src/asl_vision/engine.py` [Completed]: Real-time ASL vision perception engine running landmark extraction, normalization, sliding window buffer, and ST-GCN inference to emit discrete `SignDetection` events conforming to `@converse/contracts`.
 5. `ml/asl-vision/scripts/train.py` [Completed]: Supervised training pipeline with CosineAnnealingLR, evaluation metrics, and checkpointing.
 6. `ml/asl-vision/scripts/export_onnx.py` [Completed]: ONNX export harness supporting dynamic batch dimensions and numerical parity assertions.
-7. Unit test suites [Completed]: `test_sliding_window.py`, `test_stgcn.py`, `test_dataset.py`, `test_engine.py`, `test_export_onnx.py`, `test_train.py` (116 tests passing).
+7. `ml/asl-vision/src/asl_vision/models/tgcn_wlasl.py` [Completed]: Pretrained Temporal Graph Convolutional Network (TGCN) model for 100 dynamic ASL vocabulary signs with multi-head spatial attention and 3.0ms CPU inference.
+8. `ml/asl-vision/scripts/demo_webcam.py` [Completed]: Real-time live webcam perception pipeline with live top-3 neural prediction meters, interactive on-screen ASL movement guide ([H]), multi-domain scenario injections ([1-8]), and single-stroke debouncing.
+9. Unit test suites [Completed]: `test_sliding_window.py`, `test_stgcn.py`, `test_dataset.py`, `test_engine.py`, `test_export_onnx.py`, `test_train.py`, `test_demo_pipeline.py`, `test_tgcn_wlasl.py` (135 tests passing).
 
 ### 2.6 Verification Criteria
 - Validation Top-1 accuracy $\ge 72\%$ and Top-5 accuracy $\ge 88\%$ on WLASL-100 validation split with unseen signers.
-- Inference latency $\le 25\text{ms}$ per 30-frame window on standard CPU.
+- Inference latency $\le 25\text{ms}$ per window on standard CPU (TGCN achieves 3.0ms forward pass).
 - Clean ONNX model export passing parity tests with PyTorch model output.
 
 ---

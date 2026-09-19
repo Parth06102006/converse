@@ -160,3 +160,16 @@ def test_gloss_stabilizer_sign_transition() -> None:
     assert flushed == ["HELLO", "NICE", "MEET", "YOU"]
     assert reconstruct_sentence(flushed) == "Hello, nice to meet you."
 
+
+def test_reconstruct_wlasl_phrases() -> None:
+    assert reconstruct_sentence(["WANT", "DRINK", "WATER"]) == "I want to drink water."
+    assert reconstruct_sentence(["LIKE", "EAT", "PIZZA"]) == "I like eating pizza."
+    assert reconstruct_sentence(["DOCTOR", "TIME", "WHAT"]) == "What time is the doctor appointment?"
+    assert reconstruct_sentence(["NEED", "MEDICINE"]) == "I need medicine."
+    assert reconstruct_sentence(["WORK", "COMPUTER"]) == "I am working on the computer."
+    assert reconstruct_sentence(["MY", "FAMILY", "DEAF"]) == "My family is Deaf."
+    assert reconstruct_sentence(["STUDY", "LANGUAGE"]) == "I am studying sign language."
+    assert reconstruct_sentence(["BATHROOM", "WHERE", "GO", "NEED"]) == "Where is the bathroom? I need to go."
+    assert reconstruct_sentence(["YESTERDAY", "ME", "WORK"]) == "Yesterday, I worked."
+
+
