@@ -7,6 +7,7 @@ with LandmarkNormalizer for scale and translation invariant representations.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -137,6 +138,159 @@ def _generate_synthetic_extracted_landmarks(
     )
 
 
+def assign_hands_by_geometry(
+    candidates: list[tuple[np.ndarray, float]],
+    pose: np.ndarray | None = None,
+    existing_left: np.ndarray | None = None,
+    existing_right: np.ndarray | None = None,
+    existing_left_conf: float = 0.0,
+    existing_right_conf: float = 0.0,
+    min_separation: float = 0.08,
+) -> tuple[np.ndarray | None, float, np.ndarray | None, float]:
+    """Assign candidate hand detections to left and right slots using anatomical geometry.
+
+    Uses pose wrist landmarks (MediaPipe pose[15] LWrist and pose[16] RWrist) or spatial
+    partitioning to prevent single-hand duplication and eliminate handedness inversion artifacts.
+
+    Returns:
+        (left_hand, left_conf, right_hand, right_conf)
+    """
+    left_hand = existing_left
+    left_conf = existing_left_conf
+    right_hand = existing_right
+    right_conf = existing_right_conf
+
+    # Filter out candidate hands that are physically overlapping with already established hands
+    valid_candidates: list[tuple[np.ndarray, float]] = []
+    for arr, conf in candidates:
+        if arr is None or len(arr) < 21:
+            continue
+        wrist = arr[0, :2]
+        if left_hand is not None and float(np.linalg.norm(wrist - left_hand[0, :2])) < min_separation:
+            continue
+        if right_hand is not None and float(np.linalg.norm(wrist - right_hand[0, :2])) < min_separation:
+            continue
+        valid_candidates.append((arr, conf))
+
+    if not valid_candidates:
+        return left_hand, left_conf, right_hand, right_conf
+
+    # Determine signer's midline (center x) in unmirrored camera coordinates
+    mid_x = 0.5
+    if pose is not None and len(pose) > 12:
+        has_s11 = not (float(pose[11, 0]) == 0.0 and float(pose[11, 1]) == 0.0) and not np.isnan(pose[11, 0])
+        has_s12 = not (float(pose[12, 0]) == 0.0 and float(pose[12, 1]) == 0.0) and not np.isnan(pose[12, 0])
+        if has_s11 and has_s12:
+            mid_x = float((pose[11, 0] + pose[12, 0]) / 2.0)
+        elif float(pose[0, 0]) != 0.0 and not np.isnan(pose[0, 0]):
+            mid_x = float(pose[0, 0])
+    elif pose is not None and len(pose) > 0 and float(pose[0, 0]) != 0.0 and not np.isnan(pose[0, 0]):
+        mid_x = float(pose[0, 0])
+
+    has_lwrist = (
+        pose is not None
+        and len(pose) > 15
+        and not (float(pose[15, 0]) == 0.0 and float(pose[15, 1]) == 0.0)
+        and not np.isnan(pose[15, 0])
+    )
+    has_rwrist = (
+        pose is not None
+        and len(pose) > 16
+        and not (float(pose[16, 0]) == 0.0 and float(pose[16, 1]) == 0.0)
+        and not np.isnan(pose[16, 0])
+    )
+    has_pose_wrists = has_lwrist and has_rwrist
+
+    # Case 1: Neither hand established yet
+    if left_hand is None and right_hand is None:
+        if len(valid_candidates) >= 2:
+            if has_pose_wrists:
+                c0, c1 = valid_candidates[0], valid_candidates[1]
+                cost_a = float(np.linalg.norm(c0[0][0, :2] - pose[16, :2])) + float(np.linalg.norm(c1[0][0, :2] - pose[15, :2]))
+                cost_b = float(np.linalg.norm(c0[0][0, :2] - pose[15, :2])) + float(np.linalg.norm(c1[0][0, :2] - pose[16, :2]))
+                if cost_a <= cost_b:
+                    right_hand, right_conf = c0
+                    left_hand, left_conf = c1
+                else:
+                    left_hand, left_conf = c0
+                    right_hand, right_conf = c1
+            else:
+                sorted_c = sorted(valid_candidates, key=lambda c: float(c[0][0, 0]))
+                right_hand, right_conf = sorted_c[0]
+                left_hand, left_conf = sorted_c[-1]
+        elif len(valid_candidates) == 1:
+            c0 = valid_candidates[0]
+            wrist = c0[0][0, :2]
+            if has_pose_wrists:
+                d_r = float(np.linalg.norm(wrist - pose[16, :2]))
+                d_l = float(np.linalg.norm(wrist - pose[15, :2]))
+                if d_r <= d_l:
+                    right_hand, right_conf = c0
+                else:
+                    left_hand, left_conf = c0
+            elif has_rwrist:
+                d_r = float(np.linalg.norm(wrist - pose[16, :2]))
+                if d_r < 0.25 or float(wrist[0]) < mid_x:
+                    right_hand, right_conf = c0
+                else:
+                    left_hand, left_conf = c0
+            elif has_lwrist:
+                d_l = float(np.linalg.norm(wrist - pose[15, :2]))
+                if d_l < 0.25 or float(wrist[0]) >= mid_x:
+                    left_hand, left_conf = c0
+                else:
+                    right_hand, right_conf = c0
+            else:
+                if float(wrist[0]) < mid_x:
+                    right_hand, right_conf = c0
+                else:
+                    left_hand, left_conf = c0
+
+    # Case 2: Only right hand established; fill left hand only if candidate genuinely belongs to left side
+    elif left_hand is None and right_hand is not None:
+        left_candidates: list[tuple[tuple[np.ndarray, float], float]] = []
+        for c in valid_candidates:
+            wrist = c[0][0, :2]
+            if has_pose_wrists:
+                d_l = float(np.linalg.norm(wrist - pose[15, :2]))
+                d_r = float(np.linalg.norm(wrist - pose[16, :2]))
+                if d_l < d_r:
+                    left_candidates.append((c, d_l))
+            elif has_lwrist:
+                d_l = float(np.linalg.norm(wrist - pose[15, :2]))
+                if d_l < 0.35 or float(wrist[0]) >= mid_x:
+                    left_candidates.append((c, d_l))
+            else:
+                if float(wrist[0]) >= mid_x:
+                    left_candidates.append((c, abs(float(wrist[0]) - mid_x)))
+        if left_candidates:
+            left_candidates.sort(key=lambda x: x[1])
+            left_hand, left_conf = left_candidates[0][0]
+
+    # Case 3: Only left hand established; fill right hand only if candidate genuinely belongs to right side
+    elif right_hand is None and left_hand is not None:
+        right_candidates: list[tuple[tuple[np.ndarray, float], float]] = []
+        for c in valid_candidates:
+            wrist = c[0][0, :2]
+            if has_pose_wrists:
+                d_r = float(np.linalg.norm(wrist - pose[16, :2]))
+                d_l = float(np.linalg.norm(wrist - pose[15, :2]))
+                if d_r < d_l:
+                    right_candidates.append((c, d_r))
+            elif has_rwrist:
+                d_r = float(np.linalg.norm(wrist - pose[16, :2]))
+                if d_r < 0.35 or float(wrist[0]) < mid_x:
+                    right_candidates.append((c, d_r))
+            else:
+                if float(wrist[0]) < mid_x:
+                    right_candidates.append((c, abs(float(wrist[0]) - mid_x)))
+        if right_candidates:
+            right_candidates.sort(key=lambda x: x[1])
+            right_hand, right_conf = right_candidates[0][0]
+
+    return left_hand, left_conf, right_hand, right_conf
+
+
 class LandmarkExtractor:
     """MediaPipe Tasks Vision Holistic 3D landmark extractor wrapper.
 
@@ -157,6 +311,7 @@ class LandmarkExtractor:
         output_face_blendshapes: bool = True,
         use_mock: bool = False,
         backend: Callable[[np.ndarray, float], ExtractedLandmarks] | None = None,
+        hand_model_path: str | Path | None = None,
     ) -> None:
         """Initialize LandmarkExtractor.
 
@@ -172,6 +327,7 @@ class LandmarkExtractor:
             output_face_blendshapes: Whether to output facial blendshape weights for NMMs.
             use_mock: If True, uses synthetic landmark generator for testing without model files.
             backend: Optional custom extraction callback taking (frame, timestamp_ms).
+            hand_model_path: Optional path to MediaPipe gesture_recognizer.task for robust hand fallback.
         """
         self.min_detection_confidence = min_detection_confidence
         self.min_hand_confidence = min_hand_confidence
@@ -190,6 +346,7 @@ class LandmarkExtractor:
         self._custom_backend = backend
 
         self._landmarker: Any = None
+        self._hand_recognizer: Any = None
         self._mock_result_override: ExtractedLandmarks | None = None
         self._prev_video_timestamp_ms: int | None = None
 
@@ -203,6 +360,7 @@ class LandmarkExtractor:
                 if not path_obj.is_file():
                     raise FileNotFoundError(f"MediaPipe model file not found: {model_path}")
             self._init_mediapipe(model_path, model_buffer)
+            self._init_hand_fallback(hand_model_path)
         else:
             raise ValueError(
                 "No model_path or model_buffer provided and use_mock=False. "
@@ -241,6 +399,30 @@ class LandmarkExtractor:
         )
 
         self._landmarker = mp_vision.HolisticLandmarker.create_from_options(options)
+
+    def _init_hand_fallback(self, hand_model_path: str | Path | None) -> None:
+        """Initialize direct hand landmarking fallback model if available."""
+        if hand_model_path is None:
+            return
+
+        target_path = Path(hand_model_path)
+        if not target_path.is_file():
+            return
+
+        from mediapipe.tasks import python as mp_python
+        from mediapipe.tasks.python import vision as mp_vision
+
+        with contextlib.suppress(Exception):
+            base_options = mp_python.BaseOptions(model_asset_path=str(target_path))
+            options = mp_vision.GestureRecognizerOptions(
+                base_options=base_options,
+                running_mode=mp_vision.RunningMode.IMAGE,
+                num_hands=2,
+                min_hand_detection_confidence=self.min_hand_confidence,
+                min_hand_presence_confidence=self.min_hand_confidence,
+                min_tracking_confidence=self.min_hand_confidence,
+            )
+            self._hand_recognizer = mp_vision.GestureRecognizer.create_from_options(options)
 
     def set_mock_result(self, result: ExtractedLandmarks | None) -> None:
         """Set an explicit ExtractedLandmarks result to be returned in mock mode."""
@@ -346,10 +528,10 @@ class LandmarkExtractor:
         else:
             result = self._landmarker.detect(mp_image)
 
-        return self._parse_mediapipe_result(result, timestamp_ms)
+        return self._parse_mediapipe_result(result, timestamp_ms, mp_image=mp_image)
 
     def _parse_mediapipe_result(
-        self, result: Any, timestamp_ms: float
+        self, result: Any, timestamp_ms: float, mp_image: Any = None
     ) -> ExtractedLandmarks:
         """Parse MediaPipe HolisticLandmarkerResult into ExtractedLandmarks."""
         # 1. Pose landmarks (33, 4)
@@ -440,6 +622,40 @@ class LandmarkExtractor:
                 for lm in result.right_hand_landmarks[:21]
             ]
             right_hand_conf = float(np.mean(scores)) if scores else 1.0
+
+        # Fallback to direct hand tracking if Holistic missed hands
+        if (left_hand_arr is None or right_hand_arr is None) and self._hand_recognizer is not None and mp_image is not None:
+            with contextlib.suppress(Exception):
+                hand_res = self._hand_recognizer.recognize(mp_image)
+                if hand_res and hand_res.hand_landmarks:
+                    candidates: list[tuple[np.ndarray, float]] = []
+                    for idx, hand_lms in enumerate(hand_res.hand_landmarks):
+                        arr = np.array(
+                            [
+                                [
+                                    lm.x if lm.x is not None and not np.isnan(lm.x) else 0.0,
+                                    lm.y if lm.y is not None and not np.isnan(lm.y) else 0.0,
+                                    lm.z if lm.z is not None and not np.isnan(lm.z) else 0.0,
+                                ]
+                                for lm in hand_lms[:21]
+                            ],
+                            dtype=np.float32,
+                        )
+                        score = 0.8
+                        if idx < len(hand_res.handedness) and hand_res.handedness[idx]:
+                            score = float(hand_res.handedness[idx][0].score)
+                        candidates.append((arr, score))
+
+                    left_hand_arr, left_hand_conf, right_hand_arr, right_hand_conf = (
+                        assign_hands_by_geometry(
+                            candidates=candidates,
+                            pose=pose_arr,
+                            existing_left=left_hand_arr,
+                            existing_right=right_hand_arr,
+                            existing_left_conf=left_hand_conf,
+                            existing_right_conf=right_hand_conf,
+                        )
+                    )
 
         # 5. Face mesh and NMM contours
         face_arr: np.ndarray | None = None
@@ -627,8 +843,13 @@ class LandmarkExtractor:
     def close(self) -> None:
         """Release underlying MediaPipe landmarker resources."""
         if self._landmarker is not None and hasattr(self._landmarker, "close"):
-            self._landmarker.close()
+            with contextlib.suppress(Exception):
+                self._landmarker.close()
             self._landmarker = None
+        if self._hand_recognizer is not None and hasattr(self._hand_recognizer, "close"):
+            with contextlib.suppress(Exception):
+                self._hand_recognizer.close()
+            self._hand_recognizer = None
 
     def __enter__(self) -> Self:
         """Context manager entry."""

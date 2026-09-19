@@ -43,7 +43,7 @@ import cv2
 import numpy as np
 
 from asl_vision.engine import ASLVisionEngine, EngineConfig, SignDetection
-from asl_vision.landmarks import LandmarkExtractor
+from asl_vision.landmarks import LandmarkExtractor, assign_hands_by_geometry
 from asl_vision.models.tgcn_wlasl import TGCNWLASLClassifier
 
 # Landmark bone connections for visual skeletal overlay
@@ -177,6 +177,10 @@ class NeuralGestureModel:
         self.last_neural_label: str | None = None
         self.last_neural_score: float = 0.0
         self.last_neural_desc: str | None = None
+        self.last_left_hand: np.ndarray | None = None
+        self.last_right_hand: np.ndarray | None = None
+        self.last_left_conf: float = 0.0
+        self.last_right_conf: float = 0.0
 
     def process_frame(
         self,
@@ -192,9 +196,34 @@ class NeuralGestureModel:
         """
         import mediapipe as mp
 
+        self.last_left_hand = None
+        self.last_right_hand = None
+        self.last_left_conf = 0.0
+        self.last_right_conf = 0.0
+
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
         ts_int = int(timestamp_ms)
         res = self._recognizer.recognize_for_video(mp_image, ts_int)
+
+        if res.hand_landmarks:
+            candidates: list[tuple[np.ndarray, float]] = []
+            for idx, hand_lms in enumerate(res.hand_landmarks):
+                arr = np.array([[lm.x, lm.y, lm.z] for lm in hand_lms[:21]], dtype=np.float32)
+                score = 0.8
+                if idx < len(res.handedness) and res.handedness[idx]:
+                    score = float(res.handedness[idx][0].score)
+                candidates.append((arr, score))
+
+            pose_for_hands = extracted_pose
+            if pose_for_hands is None and extracted is not None:
+                pose_for_hands = getattr(extracted, "pose", None)
+
+            self.last_left_hand, self.last_left_conf, self.last_right_hand, self.last_right_conf = (
+                assign_hands_by_geometry(
+                    candidates=candidates,
+                    pose=pose_for_hands,
+                )
+            )
 
         if not res.gestures or not res.hand_landmarks:
             self.last_neural_label = None
@@ -784,72 +813,64 @@ def reconstruct_sentence(glosses: list[str]) -> str:
     return f"{cleaned.capitalize()}."
 
 
-def draw_landmarks(frame: np.ndarray, extracted: Any) -> None:
+def draw_landmarks(frame: np.ndarray, extracted: Any, mirror: bool = False) -> None:
     """Draw anatomical bones, joint circles, and facial tracking anchors."""
     h, w, _ = frame.shape
+
+    def _pt(p: np.ndarray | Sequence[float]) -> tuple[int, int]:
+        px = (1.0 - float(p[0])) if mirror else float(p[0])
+        py = float(p[1])
+        return int(px * w), int(py * h)
 
     # 1. Pose connections (cyan/yellow)
     if extracted.pose is not None and len(extracted.pose) >= 17:
         for idx1, idx2 in POSE_CONNECTIONS:
             p1, p2 = extracted.pose[idx1], extracted.pose[idx2]
-            x1, y1 = int(p1[0] * w), int(p1[1] * h)
-            x2, y2 = int(p2[0] * w), int(p2[1] * h)
-            cv2.line(frame, (x1, y1), (x2, y2), (255, 180, 0), 2)
+            cv2.line(frame, _pt(p1), _pt(p2), (255, 180, 0), 2)
 
         for idx in (11, 12, 13, 14, 15, 16):
             p = extracted.pose[idx]
-            x, y = int(p[0] * w), int(p[1] * h)
-            cv2.circle(frame, (x, y), 5, (0, 220, 255), -1)
+            cv2.circle(frame, _pt(p), 5, (0, 220, 255), -1)
 
     # 2. Left hand (neon green)
     if extracted.left_hand is not None:
         for u, v in HAND_CONNECTIONS:
             p1, p2 = extracted.left_hand[u], extracted.left_hand[v]
-            x1, y1 = int(p1[0] * w), int(p1[1] * h)
-            x2, y2 = int(p2[0] * w), int(p2[1] * h)
-            cv2.line(frame, (x1, y1), (x2, y2), (50, 255, 50), 2)
+            cv2.line(frame, _pt(p1), _pt(p2), (50, 255, 50), 2)
 
         for p in extracted.left_hand:
-            x, y = int(p[0] * w), int(p[1] * h)
-            cv2.circle(frame, (x, y), 3, (0, 255, 0), -1)
+            cv2.circle(frame, _pt(p), 3, (0, 255, 0), -1)
 
     # 3. Right hand (magenta)
     if extracted.right_hand is not None:
         for u, v in HAND_CONNECTIONS:
             p1, p2 = extracted.right_hand[u], extracted.right_hand[v]
-            x1, y1 = int(p1[0] * w), int(p1[1] * h)
-            x2, y2 = int(p2[0] * w), int(p2[1] * h)
-            cv2.line(frame, (x1, y1), (x2, y2), (255, 50, 255), 2)
+            cv2.line(frame, _pt(p1), _pt(p2), (255, 50, 255), 2)
 
         for p in extracted.right_hand:
-            x, y = int(p[0] * w), int(p[1] * h)
-            cv2.circle(frame, (x, y), 3, (255, 0, 255), -1)
+            cv2.circle(frame, _pt(p), 3, (255, 0, 255), -1)
 
     # 4. Face mesh key anchors & contours (subtle visual confirmation)
     if extracted.face is not None and len(extracted.face) >= 153:
         # Chin anchor (152) highlighted in bright yellow
         chin = extracted.face[152]
-        cx, cy = int(chin[0] * w), int(chin[1] * h)
-        cv2.circle(frame, (cx, cy), 6, (0, 255, 255), -1)
+        cv2.circle(frame, _pt(chin), 6, (0, 255, 255), -1)
 
         # Nose bridge anchor (1) highlighted in green
         nose = extracted.face[1]
-        nx, ny = int(nose[0] * w), int(nose[1] * h)
-        cv2.circle(frame, (nx, ny), 4, (0, 255, 100), -1)
+        cv2.circle(frame, _pt(nose), 4, (0, 255, 100), -1)
 
         # Lips outline points in cyan
         for lip_idx in (61, 291, 0, 17, 13, 14):
             if lip_idx < len(extracted.face):
                 lp = extracted.face[lip_idx]
-                lx, ly = int(lp[0] * w), int(lp[1] * h)
-                cv2.circle(frame, (lx, ly), 3, (255, 220, 0), -1)
+                cv2.circle(frame, _pt(lp), 3, (255, 220, 0), -1)
 
         # Eyebrows in orange (NMM tracking indicator)
         for eb_idx in (70, 107, 300, 336):
             if eb_idx < len(extracted.face):
                 ep = extracted.face[eb_idx]
-                ex, ey = int(ep[0] * w), int(ep[1] * h)
-                cv2.circle(frame, (ex, ey), 3, (0, 165, 255), -1)
+                cv2.circle(frame, _pt(ep), 3, (0, 165, 255), -1)
 
 
 def draw_hud(
@@ -1096,37 +1117,76 @@ def run_webcam_demo(
             if dt > 0:
                 fps = 0.9 * fps + 0.1 * (1.0 / dt)
 
-            # Flip for mirror interaction
-            frame = cv2.flip(frame, 1)
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Convert raw frame to RGB for landmark extraction in true camera orientation
+            raw_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             timestamp_ms = t_frame_start * 1000.0
 
-            # 1. Extract 3D landmarks (Pose + Bilateral Hands + Face Mesh)
-            extracted = extractor.extract(frame_rgb, timestamp_ms=timestamp_ms)
+            # 1. Extract 3D landmarks (Pose + Bilateral Hands + Face Mesh) in true anatomical orientation
+            extracted = extractor.extract(raw_rgb, timestamp_ms=timestamp_ms)
 
-            # 2. Feed landmarks to WLASL-100 Temporal Graph Convolutional Network
+            # Flip frame for mirror interaction display
+            frame = cv2.flip(frame, 1)
+
+            # 2. Neural Gesture Model inference (MediaPipe) & hand landmark fusion
+            neural_det: SignDetection | None = None
+            neural_desc: str | None = None
+            if neural_model is not None:
+                neural_det, neural_desc = neural_model.process_frame(
+                    frame_rgb=raw_rgb,
+                    extracted=extracted,
+                    timestamp_ms=timestamp_ms,
+                )
+                fused_lh = extracted.left_hand
+                fused_lh_conf = extracted.left_hand_confidence
+                fused_rh = extracted.right_hand
+                fused_rh_conf = extracted.right_hand_confidence
+
+                if (
+                    fused_lh is None
+                    and neural_model.last_left_hand is not None
+                    and (fused_rh is None or float(np.linalg.norm(neural_model.last_left_hand[0, :2] - fused_rh[0, :2])) >= 0.08)
+                ):
+                    fused_lh = neural_model.last_left_hand
+                    fused_lh_conf = neural_model.last_left_conf
+
+                if (
+                    fused_rh is None
+                    and neural_model.last_right_hand is not None
+                    and (fused_lh is None or float(np.linalg.norm(neural_model.last_right_hand[0, :2] - fused_lh[0, :2])) >= 0.08)
+                ):
+                    fused_rh = neural_model.last_right_hand
+                    fused_rh_conf = neural_model.last_right_conf
+
+                if fused_lh is not extracted.left_hand or fused_rh is not extracted.right_hand:
+                    import dataclasses
+
+                    extracted = dataclasses.replace(
+                        extracted,
+                        left_hand=fused_lh,
+                        right_hand=fused_rh,
+                        left_hand_confidence=fused_lh_conf,
+                        right_hand_confidence=fused_rh_conf,
+                    )
+
+            # 3. Feed landmarks to WLASL-100 Temporal Graph Convolutional Network
             tgcn_det: SignDetection | None = None
             if tgcn_classifier is not None:
                 tgcn_classifier.add_frame(extracted)
                 if extracted.left_hand is not None or extracted.right_hand is not None:
                     best_g, best_c, tgcn_top3 = tgcn_classifier.predict()
-                    if best_g and best_c >= 0.48:
+                    if best_g and best_c >= tgcn_classifier.min_confidence:
                         tgcn_det = SignDetection(
                             gloss=best_g,
                             confidence=best_c,
                             start_time_ms=timestamp_ms,
                             end_time_ms=timestamp_ms,
                         )
-
-            # 3. Neural Gesture Model inference (MediaPipe)
-            neural_det: SignDetection | None = None
-            neural_desc: str | None = None
-            if neural_model is not None:
-                neural_det, neural_desc = neural_model.process_frame(
-                    frame_rgb=frame_rgb,
-                    extracted=extracted,
-                    timestamp_ms=timestamp_ms,
-                )
+                        tgcn_classifier.reset()
+                    elif best_g is None:
+                        # Clear sub-threshold or non-moving top3 predictions from HUD
+                        tgcn_top3 = []
+                else:
+                    tgcn_top3 = []
 
             # 4. Spatiotemporal sequence inference (ST-GCN)
             detections = engine.process_landmarks(extracted, timestamp_ms=timestamp_ms)
@@ -1134,7 +1194,8 @@ def run_webcam_demo(
             # Arbitrate active detection: Prioritize static facial/gesture recognizer or dynamic TGCN
             active_det: SignDetection | None = None
             det_source = ""
-            if neural_det is not None and neural_det.confidence >= 0.60:
+            arb_threshold = neural_model.min_confidence if neural_model is not None else 0.55
+            if neural_det is not None and neural_det.confidence >= arb_threshold:
                 active_det = neural_det
                 det_source = "Gesture Recognizer"
             elif tgcn_det is not None:
@@ -1167,7 +1228,7 @@ def run_webcam_demo(
             perception_latency_ms = (time.perf_counter() - t_frame_start) * 1000.0
 
             # 7. Render HUD, Top-3 Predictions, and Subtitles
-            draw_landmarks(frame, extracted)
+            draw_landmarks(frame, extracted, mirror=True)
             time_since_ms = (t_frame_start - last_detection_wall_time) * 1000.0
             face_tracked = extracted.face is not None and len(extracted.face) > 0
             draw_hud(
@@ -1311,9 +1372,9 @@ def parse_args(args: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(args)
 
 
-def ensure_mediapipe_model(target_dir: str = "models") -> Path:
+def ensure_mediapipe_model(target_dir: str | Path | None = None) -> Path:
     """Ensure Google MediaPipe Holistic Landmarker bundle is available, downloading if needed."""
-    models_path = Path(target_dir)
+    models_path = Path(target_dir) if target_dir is not None else Path(__file__).resolve().parent.parent / "models"
     models_path.mkdir(parents=True, exist_ok=True)
     task_file = models_path / "holistic_landmarker.task"
     if not task_file.is_file():
@@ -1324,9 +1385,9 @@ def ensure_mediapipe_model(target_dir: str = "models") -> Path:
     return task_file
 
 
-def ensure_gesture_recognizer_model(target_dir: str = "models") -> Path:
+def ensure_gesture_recognizer_model(target_dir: str | Path | None = None) -> Path:
     """Ensure Google MediaPipe Gesture Recognizer bundle is available, downloading if needed."""
-    models_path = Path(target_dir)
+    models_path = Path(target_dir) if target_dir is not None else Path(__file__).resolve().parent.parent / "models"
     models_path.mkdir(parents=True, exist_ok=True)
     task_file = models_path / "gesture_recognizer.task"
     if not task_file.is_file():
@@ -1337,9 +1398,9 @@ def ensure_gesture_recognizer_model(target_dir: str = "models") -> Path:
     return task_file
 
 
-def ensure_tgcn_model(target_dir: str = "models") -> Path:
+def ensure_tgcn_model(target_dir: str | Path | None = None) -> Path:
     """Ensure pretrained WLASL-100 TGCN checkpoint is available, downloading if needed."""
-    models_path = Path(target_dir)
+    models_path = Path(target_dir) if target_dir is not None else Path(__file__).resolve().parent.parent / "models"
     models_path.mkdir(parents=True, exist_ok=True)
     bin_file = models_path / "tgcn_asl100.bin"
     if not bin_file.is_file():
@@ -1362,10 +1423,10 @@ def main(args: Sequence[str] | None = None) -> None:
     )
 
     model_path = ensure_mediapipe_model()
-    extractor = LandmarkExtractor(model_path=model_path)
+    gesture_model_path = ensure_gesture_recognizer_model()
+    extractor = LandmarkExtractor(model_path=model_path, hand_model_path=gesture_model_path)
     engine = ASLVisionEngine(config=config, extractor=extractor)
 
-    gesture_model_path = ensure_gesture_recognizer_model()
     neural_model = NeuralGestureModel(gesture_model_path, min_confidence=parsed.min_confidence)
     print(f"Loaded pretrained MediaPipe Neural Gesture Model from: {gesture_model_path}")
 

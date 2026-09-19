@@ -145,6 +145,25 @@ class GCN_muti_att(nn.Module):
         return self.fc_out(out)
 
 
+def _extract_upper_body_pose(pose: np.ndarray | None) -> np.ndarray:
+    """Extract 13 upper-body pose joints aligned to UPPER_BODY_POSE_INDICES normalized to [-1, 1]."""
+    out = np.full((13, 2), -1.0, dtype=np.float32)
+    if pose is None or len(pose) == 0:
+        return out
+
+    def _norm(p: np.ndarray) -> np.ndarray:
+        if np.isnan(p[0]) or np.isnan(p[1]) or (float(p[0]) == 0.0 and float(p[1]) == 0.0):
+            return np.array([-1.0, -1.0], dtype=np.float32)
+        return 2.0 * (p[:2] - 0.5)
+
+    n_pose = len(pose)
+    for i, idx in enumerate(UPPER_BODY_POSE_INDICES):
+        if n_pose > idx:
+            out[i] = _norm(pose[idx])
+
+    return out
+
+
 class TGCNWLASLClassifier:
     """Pretrained WLASL-100 Temporal Graph Convolutional Network inference engine."""
 
@@ -153,10 +172,14 @@ class TGCNWLASLClassifier:
         checkpoint_path: Path | str,
         num_samples: int = 50,
         min_confidence: float = 0.45,
+        min_active_frames: int = 15,
+        min_motion: float = 0.020,
         device: str = "cpu",
     ) -> None:
         self.num_samples = num_samples
         self.min_confidence = min_confidence
+        self.min_active_frames = min_active_frames
+        self.min_motion = min_motion
         self.device = torch.device(device)
         self.vocab = WLASL_100_GLOSSES
 
@@ -181,35 +204,58 @@ class TGCNWLASLClassifier:
 
         # Rolling temporal buffer maintaining 55 keypoint coordinates
         self.frame_buffer: deque[np.ndarray] = deque(maxlen=num_samples)
+        self.active_hand_frames: int = 0
+        self.idle_frames: int = 0
 
     def add_frame(self, extracted: Any) -> None:
         """Extract 55 keypoints (13 upper pose + 21 left hand + 21 right hand) and append to buffer."""
-        # Frame shape: (55, 2)
-        pts = np.zeros((55, 2), dtype=np.float32)
+        has_left = extracted.left_hand is not None and len(extracted.left_hand) >= 21
+        has_right = extracted.right_hand is not None and len(extracted.right_hand) >= 21
 
-        # 1. Upper-body pose (13 points)
-        if extracted.pose is not None and len(extracted.pose) >= 25:
-            for i, idx in enumerate(UPPER_BODY_POSE_INDICES):
-                pts[i, 0] = float(extracted.pose[idx, 0])
-                pts[i, 1] = float(extracted.pose[idx, 1])
+        # Check if hands are active in signing space (reject resting hands below desk/lap)
+        left_active = has_left and (float(extracted.left_hand[0, 1]) < 0.76 or float(extracted.left_hand[8, 1]) < 0.72)
+        right_active = has_right and (float(extracted.right_hand[0, 1]) < 0.76 or float(extracted.right_hand[8, 1]) < 0.72)
+        has_active_hand = left_active or right_active
+
+        if not has_active_hand:
+            self.idle_frames += 1
+            if self.idle_frames >= 10:
+                self.reset()
+                return
+            # If an active stroke was underway, allow brief occlusion/transition up to 9 frames
+            # Preserve pose coordinates so temporal graph convolution continuity is maintained
+            if self.active_hand_frames > 0:
+                pts = np.full((55, 2), -1.0, dtype=np.float32)
+                pts[:13] = _extract_upper_body_pose(extracted.pose)
+                self.frame_buffer.append(pts)
+            return
+
+        self.idle_frames = 0
+        self.active_hand_frames += 1
+
+        # Frame shape: (55, 2), unobserved joints initialize to -1.0
+        pts = np.full((55, 2), -1.0, dtype=np.float32)
+
+        # 1. Upper-body pose (13 points mapped to OpenPose BODY_25 layout)
+        pts[:13] = _extract_upper_body_pose(extracted.pose)
 
         # 2. Left hand (21 points)
-        if extracted.left_hand is not None and len(extracted.left_hand) >= 21:
+        if left_active:
             for j in range(21):
-                pts[13 + j, 0] = float(extracted.left_hand[j, 0])
-                pts[13 + j, 1] = float(extracted.left_hand[j, 1])
+                pts[13 + j] = 2.0 * (extracted.left_hand[j, :2] - 0.5)
 
         # 3. Right hand (21 points)
-        if extracted.right_hand is not None and len(extracted.right_hand) >= 21:
+        if right_active:
             for k in range(21):
-                pts[34 + k, 0] = float(extracted.right_hand[k, 0])
-                pts[34 + k, 1] = float(extracted.right_hand[k, 1])
+                pts[34 + k] = 2.0 * (extracted.right_hand[k, :2] - 0.5)
 
         self.frame_buffer.append(pts)
 
     def reset(self) -> None:
-        """Clear temporal frame buffer."""
+        """Clear temporal frame buffer and stroke tracking state."""
         self.frame_buffer.clear()
+        self.active_hand_frames = 0
+        self.idle_frames = 0
 
     @torch.no_grad()
     def predict(self) -> tuple[str | None, float, list[tuple[str, float]]]:
@@ -218,12 +264,37 @@ class TGCNWLASLClassifier:
         Returns:
             (best_gloss, best_confidence, top_3_predictions)
         """
-        if len(self.frame_buffer) < 15:
+        if len(self.frame_buffer) < self.min_active_frames or self.active_hand_frames < self.min_active_frames:
             # Need minimum frames of motion to evaluate
             return None, 0.0, []
 
         buf_len = len(self.frame_buffer)
         raw_frames = np.stack(list(self.frame_buffer), axis=0)  # Shape (T, 55, 2)
+
+        # Dynamic temporal motion check: verify active hand has kinematic displacement over time
+        # (reject static resting posture or frozen hands)
+        lh_pts = raw_frames[:, 13:34, :]  # (T, 21, 2)
+        rh_pts = raw_frames[:, 34:55, :]  # (T, 21, 2)
+
+        def _calc_temporal_motion(hand_pts: np.ndarray) -> float:
+            valid_mask = (hand_pts > -0.99).all(axis=-1)
+            joint_stds: list[float] = []
+            for j in range(21):
+                v = valid_mask[:, j]
+                if v.sum() >= 10:
+                    j_std = float(np.std(hand_pts[v, j, :], axis=0).mean())
+                    joint_stds.append(j_std)
+            if not joint_stds:
+                return 0.0
+            return float(np.mean(joint_stds))
+
+        lh_motion = _calc_temporal_motion(lh_pts)
+        rh_motion = _calc_temporal_motion(rh_pts)
+
+        max_motion = max(lh_motion, rh_motion)
+        if max_motion < self.min_motion:
+            # Insufficient dynamic motion (hands held static or resting)
+            return None, 0.0, []
 
         # Resample or pad to fixed length (num_samples = 50)
         if buf_len != self.num_samples:

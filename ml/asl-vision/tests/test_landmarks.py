@@ -11,6 +11,7 @@ from asl_vision.landmarks import (
     NMM_LIP_INDICES,
     ExtractedLandmarks,
     LandmarkExtractor,
+    assign_hands_by_geometry,
 )
 from asl_vision.normalization import LandmarkNormalizer, NormalizedFrame
 
@@ -360,4 +361,202 @@ def test_parse_mediapipe_result_nan_and_none_sanitization() -> None:
     assert not np.isnan(parsed.left_hand).any()
     assert parsed.right_hand is not None
     assert not np.isnan(parsed.right_hand).any()
+
+
+def test_hand_fallback_no_single_hand_cloning() -> None:
+    """Verifies that hand fallback does not clone a single hand into both hands."""
+    extractor = LandmarkExtractor(use_mock=True)
+
+    class DummyLm:
+        x = 0.35
+        y = 0.5
+        z = 0.0
+        visibility = 1.0
+
+    mock_holistic_res = MagicMock()
+    mock_holistic_res.pose_landmarks = []
+    mock_holistic_res.pose_world_landmarks = []
+    mock_holistic_res.left_hand_landmarks = None
+    mock_holistic_res.right_hand_landmarks = [DummyLm() for _ in range(21)]
+    mock_holistic_res.face_landmarks = []
+    mock_holistic_res.face_blendshapes = None
+
+    mock_fallback_res = MagicMock()
+    mock_fallback_res.hand_landmarks = [[DummyLm() for _ in range(21)]]
+    mock_handedness = MagicMock(category_name="Right", score=0.92)
+    mock_fallback_res.handedness = [[mock_handedness]]
+
+    extractor._hand_recognizer = MagicMock()
+    extractor._hand_recognizer.recognize.return_value = mock_fallback_res
+
+    parsed = extractor._parse_mediapipe_result(mock_holistic_res, timestamp_ms=0.0, mp_image=MagicMock())
+    assert parsed.right_hand is not None
+    assert parsed.left_hand is None, "Left hand should remain None and not be cloned from right hand!"
+
+
+def test_hand_fallback_detects_missing_hand() -> None:
+    """Verifies that hand fallback detects a missing hand when Holistic detected neither."""
+    extractor = LandmarkExtractor(use_mock=True)
+
+    class DummyLm:
+        x = 0.65
+        y = 0.45
+        z = 0.0
+        visibility = 1.0
+
+    mock_holistic_res = MagicMock()
+    mock_holistic_res.pose_landmarks = []
+    mock_holistic_res.pose_world_landmarks = []
+    mock_holistic_res.left_hand_landmarks = None
+    mock_holistic_res.right_hand_landmarks = None
+    mock_holistic_res.face_landmarks = []
+    mock_holistic_res.face_blendshapes = None
+
+    mock_fallback_res = MagicMock()
+    mock_fallback_res.hand_landmarks = [[DummyLm() for _ in range(21)]]
+    mock_handedness = MagicMock(category_name="Left", score=0.88)
+    mock_fallback_res.handedness = [[mock_handedness]]
+
+    extractor._hand_recognizer = MagicMock()
+    extractor._hand_recognizer.recognize.return_value = mock_fallback_res
+
+    parsed = extractor._parse_mediapipe_result(mock_holistic_res, timestamp_ms=0.0, mp_image=MagicMock())
+    assert parsed.left_hand is not None
+    assert parsed.right_hand is None
+    assert parsed.left_hand_confidence == pytest.approx(0.88)
+
+
+def test_hand_fallback_assigns_both_hands_even_with_identical_category_name() -> None:
+    """Verifies that fallback assigns both hands even if MediaPipe labels both as 'Right'."""
+    extractor = LandmarkExtractor(use_mock=True)
+
+    class DummyLm:
+        def __init__(self, x: float, y: float) -> None:
+            self.x = x
+            self.y = y
+            self.z = 0.0
+            self.visibility = 1.0
+
+    mock_holistic_res = MagicMock()
+    mock_holistic_res.pose_landmarks = []
+    mock_holistic_res.pose_world_landmarks = []
+    mock_holistic_res.left_hand_landmarks = None
+    mock_holistic_res.right_hand_landmarks = None
+    mock_holistic_res.face_landmarks = []
+    mock_holistic_res.face_blendshapes = None
+
+    # Two detected hands (one at x=0.3 on right side of signer, one at x=0.7 on left side)
+    mock_fallback_res = MagicMock()
+    mock_fallback_res.hand_landmarks = [
+        [DummyLm(0.3, 0.5) for _ in range(21)],
+        [DummyLm(0.7, 0.5) for _ in range(21)],
+    ]
+    # MediaPipe incorrectly reports 'Right' for both hands
+    mock_cat = MagicMock(category_name="Right", score=0.90)
+    mock_fallback_res.handedness = [[mock_cat], [mock_cat]]
+
+    extractor._hand_recognizer = MagicMock()
+    extractor._hand_recognizer.recognize.return_value = mock_fallback_res
+
+    parsed = extractor._parse_mediapipe_result(mock_holistic_res, timestamp_ms=0.0, mp_image=MagicMock())
+    assert parsed.right_hand is not None, "Right hand slot should be filled!"
+    assert parsed.left_hand is not None, "Left hand slot should also be filled even if both were labeled 'Right'!"
+    assert parsed.right_hand[0, 0] == pytest.approx(0.3)
+    assert parsed.left_hand[0, 0] == pytest.approx(0.7)
+
+
+def test_assign_hands_by_geometry_wrist_proximity() -> None:
+    """Verifies that hand candidates are correctly assigned using pose wrist proximity."""
+    pose = np.zeros((33, 4), dtype=np.float32)
+    pose[15] = [0.70, 0.60, 0.0, 1.0]  # LWrist
+    pose[16] = [0.30, 0.60, 0.0, 1.0]  # RWrist
+
+    cand_near_right = (np.full((21, 3), [0.32, 0.62, 0.0], dtype=np.float32), 0.95)
+    cand_near_left = (np.full((21, 3), [0.68, 0.62, 0.0], dtype=np.float32), 0.92)
+
+    # Candidates passed in reverse order
+    lh, l_conf, rh, r_conf = assign_hands_by_geometry(
+        candidates=[cand_near_left, cand_near_right],
+        pose=pose,
+    )
+    assert rh is not None and lh is not None
+    assert rh[0, 0] == pytest.approx(0.32)
+    assert lh[0, 0] == pytest.approx(0.68)
+    assert r_conf == pytest.approx(0.95)
+    assert l_conf == pytest.approx(0.92)
+
+
+def test_assign_hands_by_geometry_prevents_duplicate_cloning() -> None:
+    """Verifies that an existing hand is not duplicated into the opposite slot."""
+    existing_rh = np.full((21, 3), [0.35, 0.50, 0.0], dtype=np.float32)
+    # Candidate physically overlaps existing right hand (< min_separation)
+    cand_dup = (np.full((21, 3), [0.36, 0.51, 0.0], dtype=np.float32), 0.90)
+
+    lh, _l_conf, rh, r_conf = assign_hands_by_geometry(
+        candidates=[cand_dup],
+        pose=None,
+        existing_right=existing_rh,
+        existing_right_conf=0.85,
+    )
+    assert rh is not None
+    assert lh is None, "Overlapping duplicate candidate must not be cloned into left_hand!"
+    assert r_conf == pytest.approx(0.85)
+
+
+def test_assign_hands_by_geometry_no_pose_spatial_partition() -> None:
+    """Verifies that when pose is missing, unmirrored camera coordinates partition hands correctly."""
+    cand_right_side = (np.full((21, 3), [0.25, 0.50, 0.0], dtype=np.float32), 0.88)
+    cand_left_side = (np.full((21, 3), [0.75, 0.50, 0.0], dtype=np.float32), 0.86)
+
+    lh, _l_conf, rh, _r_conf = assign_hands_by_geometry(
+        candidates=[cand_right_side, cand_left_side],
+        pose=None,
+    )
+    assert rh is not None and lh is not None
+    assert rh[0, 0] == pytest.approx(0.25)
+    assert lh[0, 0] == pytest.approx(0.75)
+
+
+def test_assign_hands_by_geometry_single_right_hand_raised_not_inverted() -> None:
+    """Verifies that a right hand raised into signing space is assigned to right_hand even when pose wrist is at rest."""
+    pose = np.zeros((33, 4), dtype=np.float32)
+    pose[0] = [0.50, 0.20, 0.0, 1.0]   # Nose
+    pose[11] = [0.60, 0.35, 0.0, 1.0]  # LShoulder
+    pose[12] = [0.40, 0.35, 0.0, 1.0]  # RShoulder
+    pose[16] = [0.35, 0.75, 0.0, 1.0]  # RWrist (at rest/lap)
+    # LWrist (15) missing / not detected
+
+    # User raises right hand near chin/face (x=0.38, y=0.35)
+    # Distance to pose[16] is 0.401 > 0.30, but it is on the signer's right side (x < 0.50)
+    cand_raised_right = (np.full((21, 3), [0.38, 0.35, 0.0], dtype=np.float32), 0.95)
+
+    lh, _l_conf, rh, r_conf = assign_hands_by_geometry(
+        candidates=[cand_raised_right],
+        pose=pose,
+    )
+    assert rh is not None, "Right hand must be assigned to right_hand slot!"
+    assert lh is None, "Right hand candidate must NOT be inverted into left_hand!"
+    assert rh[0, 0] == pytest.approx(0.38)
+    assert r_conf == pytest.approx(0.95)
+
+
+def test_assign_hands_by_geometry_existing_right_rejects_second_right_candidate() -> None:
+    """Verifies that when right hand exists, a separate candidate on the right side is not assigned to left hand."""
+    existing_rh = np.full((21, 3), [0.25, 0.50, 0.0], dtype=np.float32)
+    cand_second_right = (np.full((21, 3), [0.38, 0.45, 0.0], dtype=np.float32), 0.88)
+
+    pose = np.zeros((33, 4), dtype=np.float32)
+    pose[11] = [0.60, 0.35, 0.0, 1.0]  # LShoulder
+    pose[12] = [0.40, 0.35, 0.0, 1.0]  # RShoulder
+
+    lh, _l_conf, rh, _r_conf = assign_hands_by_geometry(
+        candidates=[cand_second_right],
+        pose=pose,
+        existing_right=existing_rh,
+        existing_right_conf=0.90,
+    )
+    assert rh is not None
+    assert lh is None, "Candidate on right side of signer must not be assigned to left_hand slot!"
+
+
 
