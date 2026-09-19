@@ -18,7 +18,7 @@ The Speech-to-Sign model pipeline transforms continuous spoken English audio int
 ```mermaid
 flowchart LR
     Audio["Streaming Audio (16kHz PCM)"] --> VAD["Silero VAD (Speech Detection)"]
-    VAD --> ASR["Streaming ASR (Faster-Whisper / Zipformer)"]
+    VAD --> ASR["Streaming ASR (Amazon Transcribe / Faster-Whisper)"]
     ASR --> Transcripts["Partial / Final English Transcripts"]
     Transcripts --> Grammar["English-to-ASL Grammar Compiler"]
     Grammar --> Tokens["Normalized Gloss Tokens & NMM Cues"]
@@ -96,16 +96,16 @@ Conversational speech contains hesitations, breathing pauses, and background noi
 
 The engine must achieve low latency without catastrophic degradation of Word Error Rate (WER).
 
-- **Option 1: Faster-Whisper (CTranslate2-backed Whisper)**
-  - _Pros_: 4x faster than standard PyTorch Whisper, native INT8 / FP16 quantization, high transcription accuracy, word-level timestamps.
-  - _Cons_: Whisper was architected as an offline sequence-to-sequence model; streaming requires sliding buffer heuristics and hallucination suppression.
-- **Option 2: Sherpa-ONNX (Next-Gen Kaldi / Streaming Zipformer)**
-  - _Pros_: Designed ground-up for causal streaming inference; zero sliding buffer hacks; true chunk-by-chunk streaming with deterministic 160ms latency; native ONNX deployment without GPU requirement.
-  - _Cons_: Slightly lower vocabulary breadth than OpenAI Whisper on niche domain technical terms.
-- **Option 3: Moonshine ASR (Useful Sensors)**
-  - _Pros_: Specifically optimized for edge inference and streaming; dynamic compute based on input audio length; runs sub-realtime on resource-constrained CPUs.
-  - _Cons_: Relatively novel architecture with smaller community fine-tuning ecosystem.
-- _Recommendation for Evaluation_: Conduct an empirical shootout between Faster-Whisper `base.en`/`small.en` (quantized INT8) and Sherpa-ONNX streaming Zipformer on the LibriSpeech test-clean and conversational datasets.
+- **Option 1: Amazon Transcribe Streaming (Production Default)**
+  - _Pros_: Managed cloud HTTP/2 streaming transcription; eliminates server GPU/CPU inference burden; enterprise scaling with multi-language and regional support (`ap-south-1`).
+  - _Cons_: Metered cloud service requiring AWS IAM credentials and network connectivity.
+- **Option 2: Faster-Whisper (CTranslate2-backed Whisper INT8 - Local/Dev)**
+  - _Pros_: Offline local execution; 4x faster than standard PyTorch Whisper; word-level timestamps; zero cloud cost.
+  - _Cons_: Requires local CPU compute and sliding buffer heuristics.
+- **Option 3: Sherpa-ONNX (Next-Gen Kaldi / Streaming Zipformer)**
+  - _Pros_: True causal chunk-by-chunk streaming with deterministic latency.
+  - _Cons_: Niche vocabulary coverage compared to Transcribe/Whisper.
+- _Production Decision_: Amazon Transcribe Streaming is the production default (`ASR_BACKEND=aws`). Faster-Whisper is preserved for explicit local/offline development (`ASR_BACKEND=whisper`). Automatic silent fallback is strictly prohibited.
 
 ### 1.4 Technical Invariants and Edge Cases
 

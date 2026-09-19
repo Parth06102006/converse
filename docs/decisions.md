@@ -278,3 +278,41 @@ Implement a decoupled, modular Speech-to-Sign model pipeline:
 
 - Rule-based grammar requires manual maintenance of lemma dictionaries and lexical mouth morpheme tables.
 - Advanced poetic or highly dialectal English phrasing may require neural seq2seq model fallbacks in future phases.
+
+---
+
+## ADR-007: Amazon Transcribe Streaming Integration as Production ASR Engine
+
+### Status
+
+Accepted
+
+### Context
+
+Converse requires a production-grade, highly scalable streaming Automatic Speech Recognition (ASR) backend for real-time bidirectional communication. The system previously relied exclusively on local Faster-Whisper (CTranslate2 INT8) CPU inference.
+
+For production deployment in AWS environments, Amazon Transcribe Streaming provides managed bi-directional HTTP/2 streaming transcription, reduced server-side compute footprint, and broad regional and linguistic coverage. However, the system must retain Faster-Whisper for offline local development and evaluation without provider lock-in.
+
+### Decision
+
+1. **Provider-Independent ASR Abstraction**: Introduce `AsrEngineProtocol` decoupling speech transcription from model backends.
+2. **Production Default**: Set `AwsTranscribeStreamingEngine` as the production default (`ASR_BACKEND=aws`) utilizing official AWS streaming SDK (`amazon-transcribe`).
+3. **Local/Dev Preservation**: Retain `FasterWhisperBackend` and `WhisperAsrEngine` accessible explicitly via `ASR_BACKEND=whisper`.
+4. **Zero Silent Fallback**: Prohibit automatic fallback from AWS to Whisper or mock text upon failure. Missing credentials or service outages emit typed, explicit domain errors (`AUTHENTICATION_FAILED`, `SERVICE_UNAVAILABLE`).
+5. **Canonical Contract Alignment**: Normalize all AWS transcript events directly to canonical `@converse/contracts` `AsrTranscriptEvent` schemas without fabricating confidence scores or timestamps.
+6. **Raw PCM Encoding**: Ensure the audio stream transmitted to AWS is mono, signed 16-bit little-endian PCM at 16,000 Hz, stripping container headers while preserving multi-format ingestion (WAV, WebM, Opus).
+
+### Consequences
+
+#### Positive
+
+- Production offloads acoustic and language model inference to managed AWS infrastructure.
+- Zero code duplication in downstream grammar, non-manual marker, and spatial translation engines.
+- Clean separation between local offline development and production cloud deployment.
+- Strict security adherence utilizing the standard AWS credential provider chain without embedded secrets.
+
+#### Negative
+
+- Amazon Transcribe Streaming is a metered cloud service requiring an active AWS account and IAM permissions.
+- Network latency to AWS regional endpoints (`ap-south-1`) must be monitored to ensure streaming budget compliance.
+

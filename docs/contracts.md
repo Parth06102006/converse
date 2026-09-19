@@ -387,11 +387,14 @@ export interface AsrTranscriptEvent {
   latencyMetrics: AsrLatencyMetrics;
 }
 
+export type AsrBackend = "aws" | "whisper";
+
 export interface AsrRequest {
   audioBase64?: string;
   audioFormat?: "wav" | "webm" | "pcm" | "pcm_s16le";
   sampleRate?: number;
   sessionId?: string;
+  backend?: AsrBackend;
 }
 
 export interface AsrResponse {
