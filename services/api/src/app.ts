@@ -8,8 +8,15 @@ import type {
   SignToTextResponse,
   TextToSignRequest,
   TextToSignResponse,
+  TtsRequest,
+  TtsResponse,
 } from "@converse/contracts";
-import { transcribeSpeech, translateSpeechToSign } from "./speech-to-sign.js";
+import { reconstructSentence } from "@converse/contracts";
+import {
+  synthesizeSpeech,
+  transcribeSpeech,
+  translateSpeechToSign,
+} from "./speech-to-sign.js";
 
 export function createApp(): Express {
   const app: Express = express();
@@ -57,6 +64,16 @@ export function createApp(): Express {
           method: "POST",
           description: "Translate English text into ASL tokens",
         },
+        {
+          path: "/api/speech/asr",
+          method: "POST",
+          description: "Transcribe speech audio to text using streaming ASR",
+        },
+        {
+          path: "/api/speech/tts",
+          method: "POST",
+          description: "Synthesize speech audio from text using neural TTS",
+        },
       ],
     });
   });
@@ -66,20 +83,15 @@ export function createApp(): Express {
     (req: Request<unknown, unknown, SignToTextRequest>, res: Response) => {
       const { detections = [] } = req.body;
       const glosses = detections.map((d) => d.gloss);
-      const englishText = glosses.length > 0 ? glosses.join(" ") : "";
-
-      const response: SignToTextResponse = {
-        englishText,
-        confidence:
-          detections.length > 0
-            ? detections.reduce((acc, curr) => acc + curr.confidence, 0) /
-              detections.length
-            : 0,
-        glosses,
-        latencyMs: 12,
-      };
-
-      res.json(response);
+      const avgConfidence =
+        detections.length > 0
+          ? detections.reduce((acc, curr) => acc + curr.confidence, 0) /
+            detections.length
+          : 0;
+      const reconstructed = reconstructSentence(glosses, {
+        confidence: avgConfidence,
+      });
+      res.json(reconstructed);
     },
   );
 
@@ -106,6 +118,20 @@ export function createApp(): Express {
         res.json(result.value);
       } else {
         res.status(400).json({ ok: false, error: result.error });
+      }
+    },
+  );
+
+  app.post(
+    "/api/speech/tts",
+    async (req: Request<unknown, unknown, TtsRequest>, res: Response) => {
+      const result = await synthesizeSpeech(req.body);
+      if (result.ok) {
+        res.json(result.value);
+      } else {
+        const statusCode =
+          result.error.code === "EMPTY_TEXT_PAYLOAD" ? 400 : 503;
+        res.status(statusCode).json({ ok: false, error: result.error });
       }
     },
   );

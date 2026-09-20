@@ -8,6 +8,8 @@ import {
   type SignToken,
   type TextToSignRequest,
   type TextToSignResponse,
+  type TtsRequest,
+  type TtsResponse,
   err,
   ok,
 } from "@converse/contracts";
@@ -208,3 +210,110 @@ export async function transcribeSpeech(
     });
   }
 }
+
+export async function synthesizeSpeech(
+  request: TtsRequest,
+): Promise<Result<TtsResponse, DomainError>> {
+  const startTime = Date.now();
+  const text = request.text?.trim() ?? "";
+  const voice = request.voice || "en-US-ChristopherNeural";
+  const speed = request.speed;
+
+  if (!text) {
+    return err({
+      component: "tts",
+      code: "EMPTY_TEXT_PAYLOAD",
+      message: "text payload must not be empty",
+      recoverable: true,
+    });
+  }
+
+  let rate = "+0%";
+  if (typeof speed === "number" && !isNaN(speed)) {
+    const ratePercent = Math.round((speed - 1.0) * 100);
+    rate = ratePercent >= 0 ? `+${ratePercent}%` : `${ratePercent}%`;
+  }
+
+  try {
+    const response = await fetch(`${ML_SERVICE_URL}/internal/tts/synthesize`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "audio/wav, application/json",
+      },
+      body: JSON.stringify({
+        text,
+        voice,
+        rate,
+        format: "wav",
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "");
+      return err({
+        component: "tts",
+        code: "HTTP_ERROR",
+        message: `TTS service HTTP error: ${response.status} ${response.statusText}${errorText ? ` - ${errorText}` : ""}`,
+        recoverable: response.status >= 500,
+      });
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      const body = (await response.json()) as {
+        ok: boolean;
+        data?: {
+          audioBase64: string;
+          audioFormat: "wav" | "mp3";
+          durationMs: number;
+        };
+        error?: string;
+      };
+      if (!body.ok || !body.data) {
+        return err({
+          component: "tts",
+          code: "SYNTHESIS_FAILED",
+          message: body.error ?? "TTS synthesis failed",
+          recoverable: false,
+        });
+      }
+      return ok({
+        audioBase64: body.data.audioBase64,
+        audioFormat: body.data.audioFormat || "wav",
+        durationMs: body.data.durationMs || Date.now() - startTime,
+      });
+    }
+
+    // Binary audio response
+    const arrayBuffer = await response.arrayBuffer();
+    const audioBuffer = Buffer.from(arrayBuffer);
+    const audioBase64 = audioBuffer.toString("base64");
+
+    const headerDuration = response.headers.get("x-audio-duration-ms");
+    let durationMs = headerDuration ? parseFloat(headerDuration) : 0;
+    if (!durationMs && audioBuffer.length > 44) {
+      // 16kHz mono S16LE: 32 bytes per ms
+      const pcmBytes = audioBuffer.length - 44;
+      durationMs = Math.round(pcmBytes / 32);
+    }
+
+    return ok({
+      audioBase64,
+      audioFormat: "wav",
+      durationMs: durationMs || Date.now() - startTime,
+    });
+  } catch (error) {
+    return err({
+      component: "tts",
+      code: "SERVICE_UNAVAILABLE",
+      message:
+        error instanceof Error
+          ? `TTS service unavailable: ${error.message}`
+          : "TTS service unavailable",
+      recoverable: true,
+    });
+  }
+}
+
