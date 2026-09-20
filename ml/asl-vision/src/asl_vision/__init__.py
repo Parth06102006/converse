@@ -9,7 +9,9 @@ from asl_vision.engine import (
     DEFAULT_WLASL_100_GLOSSES,
     ASLVisionEngine,
     EngineConfig,
+    RestingPoseDetector,
     SignDetection,
+    resolve_checkpoint_path,
 )
 from asl_vision.landmarks import (
     FACIAL_CONTOUR_INDICES,
@@ -25,6 +27,10 @@ from asl_vision.models.stgcn import (
     STGCNBlock,
     TemporalConv,
 )
+from asl_vision.models.tgcn_wlasl import (
+    TGCNModel,
+    TGCNWLASLClassifier,
+)
 from asl_vision.normalization import (
     HAND_MIDDLE_MCP,
     HAND_WRIST,
@@ -38,6 +44,7 @@ from asl_vision.normalization import (
 from asl_vision.sliding_window import (
     SlidingWindowBuffer,
     SlidingWindowOutput,
+    compute_temporal_variance,
 )
 
 
@@ -63,17 +70,22 @@ __all__ = [
     "LandmarkNormalizer",
     "NormalizedFrame",
     "OneEuroFilter",
+    "RestingPoseDetector",
     "STGCNBlock",
     "SignDetection",
     "SkeletalGraph",
     "SlidingWindowBuffer",
     "SlidingWindowOutput",
     "SpatialGraphConv",
+    "TGCNModel",
+    "TGCNWLASLClassifier",
     "TemporalConv",
     "WLASLBatch",
     "WLASLDataset",
+    "compute_temporal_variance",
     "main",
     "pack_frame_tensor",
+    "resolve_checkpoint_path",
     "wlasl_collate_fn",
 ]
 

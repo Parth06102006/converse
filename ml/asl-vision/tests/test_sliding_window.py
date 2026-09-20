@@ -11,7 +11,10 @@ from asl_vision.normalization import (
     POSE_RIGHT_SHOULDER,
     NormalizedFrame,
 )
-from asl_vision.sliding_window import SlidingWindowBuffer, SlidingWindowOutput
+from asl_vision.sliding_window import (
+    SlidingWindowBuffer,
+    SlidingWindowOutput,
+)
 
 
 def _create_synthetic_frame(

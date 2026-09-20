@@ -8,12 +8,69 @@ and performs confidence thresholding to discard unconfident or empty signing seq
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
 import torch
 
 from asl_vision.normalization import NormalizedFrame, pack_frame_tensor
+
+
+def compute_temporal_variance(
+    frames: Sequence[NormalizedFrame] | None = None,
+    tensor: torch.Tensor | np.ndarray | None = None,
+) -> float:
+    """Compute temporal motion variance across landmark coordinates over time.
+
+    variance = var(landmarks_over_time)
+
+    Measures coordinate variance across the temporal window buffer for active hand
+    and upper-body skeletal landmarks to gate static poses and eliminate idle false positives.
+
+    Args:
+        frames: Optional sequence of NormalizedFrame instances.
+        tensor: Optional packed spatiotemporal tensor of shape (..., coords, W, V).
+
+    Returns:
+        Maximum temporal motion variance observed across active signing limbs.
+    """
+    if tensor is not None:
+        if isinstance(tensor, np.ndarray):
+            t = torch.from_numpy(tensor)
+        else:
+            t = tensor
+
+        v_dim = t.shape[-1]
+        # t shape: (..., coords, W, V)
+        if v_dim >= 75:
+            # 75-node layout: left hand (33:54), right hand (54:75), wrists (15, 16)
+            lh_var = float(torch.var(t[..., :2, :, 33:54], dim=-2).mean().item())
+            rh_var = float(torch.var(t[..., :2, :, 54:75], dim=-2).mean().item())
+            wrist_var = float(torch.var(t[..., :2, :, [15, 16]], dim=-2).mean().item())
+            return max(lh_var, rh_var, wrist_var)
+        elif v_dim == 55:
+            # 55-node layout: pose wrists (5, 6), left hand (13:34), right hand (34:55)
+            lh_var = float(torch.var(t[..., :2, :, 13:34], dim=-2).mean().item())
+            rh_var = float(torch.var(t[..., :2, :, 34:55], dim=-2).mean().item())
+            wrist_var = float(torch.var(t[..., :2, :, [5, 6]], dim=-2).mean().item())
+            return max(lh_var, rh_var, wrist_var)
+        else:
+            return float(torch.var(t[..., :2, :, :], dim=-2).mean().item())
+
+    if frames is not None and len(frames) > 1:
+        lh_pts = [f.left_hand[:, :2] for f in frames if f.left_hand is not None and f.is_left_hand_visible]
+        rh_pts = [f.right_hand[:, :2] for f in frames if f.right_hand is not None and f.is_right_hand_visible]
+        lw_pts = [f.pose[15, :2] for f in frames if f.pose is not None and len(f.pose) > 15]
+        rw_pts = [f.pose[16, :2] for f in frames if f.pose is not None and len(f.pose) > 16]
+
+        lh_var = float(np.var(np.stack(lh_pts, axis=0), axis=0).mean()) if len(lh_pts) > 1 else 0.0
+        rh_var = float(np.var(np.stack(rh_pts, axis=0), axis=0).mean()) if len(rh_pts) > 1 else 0.0
+        lw_var = float(np.var(np.stack(lw_pts, axis=0), axis=0).mean()) if len(lw_pts) > 1 else 0.0
+        rw_var = float(np.var(np.stack(rw_pts, axis=0), axis=0).mean()) if len(rw_pts) > 1 else 0.0
+        return max(lh_var, rh_var, lw_var, rw_var)
+
+    return 0.0
 
 
 @dataclass(frozen=True)
@@ -27,6 +84,9 @@ class SlidingWindowOutput:
     start_timestamp_ms: float
     end_timestamp_ms: float
     frames: tuple[NormalizedFrame, ...]
+    motion_energy: float = 0.0
+    variance: float = 0.0
+    is_idle: bool = False
 
     def numpy(self) -> np.ndarray:
         """Return the underlying numpy array of shape (1, 3, W, V)."""
@@ -50,6 +110,7 @@ class SlidingWindowBuffer:
         include_face: bool = False,
         emit_only_valid: bool = False,
         device: str | torch.device | None = None,
+        motion_threshold: float = 0.0,
     ) -> None:
         """Initialize the SlidingWindowBuffer.
 
@@ -62,6 +123,7 @@ class SlidingWindowBuffer:
             include_face: Whether to include facial contour landmarks in the packed tensor.
             emit_only_valid: If True, add_frame returns None when window confidence is below threshold.
             device: Optional PyTorch device for output tensor (CPU or CUDA).
+            motion_threshold: Minimum temporal motion variance to mark window valid and non-idle.
         """
         if window_size <= 0:
             raise ValueError(f"window_size must be greater than 0, got {window_size}.")
@@ -84,6 +146,7 @@ class SlidingWindowBuffer:
         self.include_face = include_face
         self.emit_only_valid = emit_only_valid
         self.device = device
+        self.motion_threshold = motion_threshold
 
         self._buffer: deque[NormalizedFrame] = deque(maxlen=window_size)
         self._frame_count = 0
@@ -182,7 +245,14 @@ class SlidingWindowBuffer:
         else:
             confidence = 1.0
 
+        variance = compute_temporal_variance(tensor=tensor)
+        motion_energy = variance
+        is_idle = variance < self.motion_threshold if self.motion_threshold > 0.0 else variance < 0.015
+
         is_valid = confidence >= self.confidence_threshold
+        if self.motion_threshold > 0.0:
+            is_valid = is_valid and (variance >= self.motion_threshold)
+
         idx = self._window_index if window_index is None else window_index
 
         output = SlidingWindowOutput(
@@ -193,6 +263,9 @@ class SlidingWindowBuffer:
             start_timestamp_ms=self._buffer[0].timestamp_ms,
             end_timestamp_ms=self._buffer[-1].timestamp_ms,
             frames=tuple(self._buffer),
+            motion_energy=motion_energy,
+            variance=variance,
+            is_idle=is_idle,
         )
 
         return output

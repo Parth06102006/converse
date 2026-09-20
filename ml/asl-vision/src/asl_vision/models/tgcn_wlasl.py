@@ -132,6 +132,27 @@ class GCN_muti_att(nn.Module):
         self.fc_out = nn.Linear(hidden_feature, num_class)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() == 4:
+            # Adapt packed spatiotemporal tensor (B, C, T, V) to (B, N=55, F=100)
+            B, _, _, V = x.shape
+            if V >= 75:
+                joint_idx = list(UPPER_BODY_POSE_INDICES) + list(range(33, 54)) + list(range(54, 75))
+                sub = x[:, :2, :, joint_idx]
+            elif V == 55:
+                sub = x[:, :2, :, :]
+            else:
+                raise ValueError(f"Expected 55 or >=75 joints for TGCN adaptation, got {V}.")
+            _, c_sub, t_sub, v_sub = sub.shape
+            sub_reshaped = sub.permute(0, 1, 3, 2).reshape(B, c_sub * v_sub, t_sub)
+            if t_sub != 50:
+                resampled = torch.nn.functional.interpolate(
+                    sub_reshaped, size=50, mode="linear", align_corners=False
+                )
+            else:
+                resampled = sub_reshaped
+            resampled = resampled.view(B, c_sub, v_sub, 50).permute(0, 2, 3, 1)
+            x = resampled.reshape(B, v_sub, 100)
+
         b, n, _ = x.shape
         y = self.gc1(x)
         y = self.bn1(y.view(b, -1)).view(b, n, -1)
@@ -143,6 +164,10 @@ class GCN_muti_att(nn.Module):
 
         out = torch.mean(y, dim=1)
         return self.fc_out(out)
+
+
+# Alias matching architecture naming conventions
+TGCNModel = GCN_muti_att
 
 
 def _extract_upper_body_pose(pose: np.ndarray | None) -> np.ndarray:
