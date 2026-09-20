@@ -264,6 +264,10 @@ export interface SignDetection {
   confidence: number;
   startTimeMs: number;
   endTimeMs: number;
+  id?: string;
+  durationMs?: number;
+  isFingerspelled?: boolean;
+  handDominance?: "left" | "right";
 }
 ```
 
@@ -731,11 +735,11 @@ Synthesizes spoken audio from English text.
 
 #### Request Schema
 
-| Field   | Type     | Required | Default             | Description                           |
-| ------- | -------- | -------- | ------------------- | ------------------------------------- |
-| `text`  | `string` | Yes      | None                | The English sentence to synthesize    |
-| `voice` | `string` | No       | `"default-neutral"` | Selected voice identifier             |
-| `speed` | `number` | No       | `1.0`               | Playback rate multiplier (0.5 to 2.0) |
+| Field   | Type     | Required | Default                   | Description                           |
+| ------- | -------- | -------- | ------------------------- | ------------------------------------- |
+| `text`  | `string` | Yes      | None                      | The English sentence to synthesize    |
+| `voice` | `string` | No       | `"en-US-ChristopherNeural"` | Selected voice identifier (gateway default; spec placeholder was `"default-neutral"`) |
+| `speed` | `number` | No       | `1.0`                     | Playback rate multiplier (0.5 to 2.0) |
 
 #### Request Example
 
@@ -756,6 +760,29 @@ Synthesizes spoken audio from English text.
   "durationMs": 2150
 }
 ```
+
+---
+
+### 5.7 Internal ML Service Endpoints (`ml/service.py`, port 5050)
+
+The Python ML microservice backs the gateway proxies above. It is internal (no auth) and returns `{ "ok": true, "data": ... }` envelopes.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| `GET` | `/health` | Liveness probe (`converse-ml-speech-to-sign`, `0.1.0`) |
+| `POST` | `/internal/speech-to-sign/compile` | Compile `englishText` to `SignRepresentation` (`{ englishText, sessionId }`) |
+| `POST` | `/internal/speech/asr` | Transcribe audio (`{ audioBase64, audioFormat, sessionId, backend? }`), per-request backend override without silent fallback |
+| `POST` | `/internal/tts/synthesize` | Synthesize speech (`{ text, voice, rate, format }`); returns binary WAV by default or base64 JSON when `Accept: application/json` |
+
+### 5.8 Real-Time Meeting Gateway (`/ws/meeting`)
+
+Implemented in `services/api/src/realtime.ts` (see ADR-011; full message catalog in `docs/api/protocol.md`). Rooms are keyed by `sessionId` with multi-client fan-out:
+
+- `session_init` (query params `sessionId`, `clientId`, `direction` also honored) -> `session_ready` with `heartbeatIntervalMs: 30000` and capabilities (`vision_landmarks`, `asr_streaming`, `sign_translation`, `tts_synthesis`, `threejs_webgl_skeletal_playback`).
+- `ping` -> `pong`; `frame_landmarks` relayed to peers.
+- `sign_detected` accumulates glosses per room, runs contracts-owned `reconstructSentence`, and broadcasts `transcript_update` + `translation_result` (`sign_to_speech`).
+- `audio_chunk` transcribes via the ML service, broadcasts `transcript_update`, compiles speech-to-sign, and broadcasts `translation_result` (`speech_to_sign`) with fallback gloss tokenization when the ML service is unreachable.
+- `transcript_update`, `translation_result`, `tts_audio` pass-through broadcasts; malformed JSON and unknown types yield recoverable `error` envelopes.
 
 ---
 

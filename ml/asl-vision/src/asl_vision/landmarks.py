@@ -68,6 +68,8 @@ class ExtractedLandmarks:
     confidence: float
     left_hand_confidence: float = 0.0
     right_hand_confidence: float = 0.0
+    frame_width: int | None = None
+    frame_height: int | None = None
 
 
 def _generate_synthetic_extracted_landmarks(
@@ -706,6 +708,8 @@ class LandmarkExtractor:
             confidence=confidence,
             left_hand_confidence=left_hand_conf,
             right_hand_confidence=right_hand_conf,
+            frame_width=getattr(mp_image, "width", None),
+            frame_height=getattr(mp_image, "height", None),
         )
 
     def extract_and_normalize(

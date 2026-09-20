@@ -13,9 +13,9 @@ import type {
   PingPayload,
   PongPayload,
   SignRepresentation,
-  SignRepresentationToken,
 } from "@converse/contracts";
 import { reconstructSentence } from "@converse/contracts";
+import { buildFallbackSignRepresentation } from "@converse/contracts";
 import { WebglAvatar } from "../../components/avatar/webgl-avatar";
 import {
   IconActivity,
@@ -49,56 +49,6 @@ const SAMPLE_HEARING_PHRASES = [
   "My name is Alex.",
   "Good to meet you.",
 ];
-
-function buildFallbackClientRepresentation(glosses: string[]): SignRepresentation {
-  const tokenDuration = 650;
-  const leadIn = 160;
-  const hold = 330;
-  const leadOut = 160;
-
-  const tokens: SignRepresentationToken[] = glosses.map((gloss, index) => {
-    const upper = gloss.toUpperCase();
-    const isQuestion = upper === "HOW" || upper === "WHAT" || upper === "WHY";
-    return {
-      tokenId: `client_tok_${index}_${gloss.toLowerCase()}`,
-      clipId: `clip_${gloss.toLowerCase()}`,
-      gloss: upper,
-      timing: {
-        startTimeMs: index * tokenDuration,
-        leadInDurationMs: leadIn,
-        holdDurationMs: hold,
-        leadOutDurationMs: leadOut,
-      },
-      spatialLoci: {
-        anchor: isQuestion ? "neutral_space" : "chest",
-        targetOffset: {
-          x: index % 2 === 0 ? 0.05 : -0.05,
-          y: 0.1,
-          z: 0.25,
-        },
-      },
-      nonManualMarkers: {
-        eyebrowIntensity: isQuestion ? 0.85 : 0.3,
-        eyebrowShape: isQuestion ? "furrow" : "neutral",
-        headRotation: {
-          pitch: isQuestion ? 0.08 : 0,
-          yaw: 0,
-          roll: 0,
-        },
-        mouthShape: "open",
-      },
-      interpolationCurve: "ease_in_out",
-    };
-  });
-
-  return {
-    version: "1.0.0",
-    sessionId: "meeting_local",
-    utteranceId: `utt_${Date.now()}`,
-    totalDurationMs: Math.max(tokens.length * tokenDuration, tokenDuration),
-    tokens,
-  };
-}
 
 export default function MeetingPage() {
   const [isConnected, setIsConnected] = useState<boolean>(false);
@@ -488,7 +438,7 @@ export default function MeetingPage() {
       setAslTokens(simulatedAsl);
 
       // Construct and trigger SignRepresentation on Three.js avatar
-      const representation = buildFallbackClientRepresentation(words);
+      const representation = buildFallbackSignRepresentation(words, sessionId);
       setAvatarRepresentation(representation);
 
       // Transmit transcript update over WebSocket

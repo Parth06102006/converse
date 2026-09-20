@@ -5,3 +5,4 @@ export * from "./speech.js";
 export * from "./realtime.js";
 export * from "./result.js";
 export * from "./reconstructor.js";
+export * from "./fallback.js";

@@ -5,9 +5,11 @@ import * as THREE from "three";
 import type {
   SignRepresentation,
   SignRepresentationToken,
-  InterpolationCurve,
 } from "@converse/contracts";
+import { blendPoses } from "./coarticulation";
+import { facePoseForToken } from "./nmm";
 import styles from "./avatar.module.css";
+import { handshapeForToken } from "./handshapes";
 
 export interface WebglAvatarProps {
   /** The incoming ASL SignRepresentation from the translation engine */
@@ -29,7 +31,7 @@ interface ArmPose {
   fingerCurl: [number, number, number, number, number];
 }
 
-interface AvatarPose {
+export interface AvatarPose {
   headRotation: [number, number, number];
   eyebrowRaise: number;
   eyebrowFurrow: number;
@@ -267,68 +269,6 @@ const GLOSS_POSES: Record<string, Partial<AvatarPose>> = {
   },
 };
 
-function interpolateLinear(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
-}
-
-function evaluateCurve(curve: InterpolationCurve, t: number): number {
-  const clamped = Math.max(0, Math.min(1, t));
-  switch (curve) {
-    case "linear":
-      return clamped;
-    case "bezier_slerp":
-      return 0.5 * (1 - Math.cos(Math.PI * clamped));
-    case "ease_in_out":
-    default:
-      return clamped * clamped * (3 - 2 * clamped);
-  }
-}
-
-function blendArmPose(from: ArmPose, to: ArmPose, t: number): ArmPose {
-  return {
-    shoulderRotation: [
-      interpolateLinear(from.shoulderRotation[0], to.shoulderRotation[0], t),
-      interpolateLinear(from.shoulderRotation[1], to.shoulderRotation[1], t),
-      interpolateLinear(from.shoulderRotation[2], to.shoulderRotation[2], t),
-    ],
-    elbowRotation: [
-      interpolateLinear(from.elbowRotation[0], to.elbowRotation[0], t),
-      interpolateLinear(from.elbowRotation[1], to.elbowRotation[1], t),
-      interpolateLinear(from.elbowRotation[2], to.elbowRotation[2], t),
-    ],
-    wristRotation: [
-      interpolateLinear(from.wristRotation[0], to.wristRotation[0], t),
-      interpolateLinear(from.wristRotation[1], to.wristRotation[1], t),
-      interpolateLinear(from.wristRotation[2], to.wristRotation[2], t),
-    ],
-    fingerCurl: [
-      interpolateLinear(from.fingerCurl[0], to.fingerCurl[0], t),
-      interpolateLinear(from.fingerCurl[1], to.fingerCurl[1], t),
-      interpolateLinear(from.fingerCurl[2], to.fingerCurl[2], t),
-      interpolateLinear(from.fingerCurl[3], to.fingerCurl[3], t),
-      interpolateLinear(from.fingerCurl[4], to.fingerCurl[4], t),
-    ],
-  };
-}
-
-function blendAvatarPose(from: AvatarPose, to: AvatarPose, t: number): AvatarPose {
-  return {
-    headRotation: [
-      interpolateLinear(from.headRotation[0], to.headRotation[0], t),
-      interpolateLinear(from.headRotation[1], to.headRotation[1], t),
-      interpolateLinear(from.headRotation[2], to.headRotation[2], t),
-    ],
-    eyebrowRaise: interpolateLinear(from.eyebrowRaise, to.eyebrowRaise, t),
-    eyebrowFurrow: interpolateLinear(from.eyebrowFurrow, to.eyebrowFurrow, t),
-    mouthOpen: interpolateLinear(from.mouthOpen, to.mouthOpen, t),
-    mouthSmile: interpolateLinear(from.mouthSmile, to.mouthSmile, t),
-    mouthWidth: interpolateLinear(from.mouthWidth, to.mouthWidth, t),
-    chestPitch: interpolateLinear(from.chestPitch, to.chestPitch, t),
-    leftArm: blendArmPose(from.leftArm, to.leftArm, t),
-    rightArm: blendArmPose(from.rightArm, to.rightArm, t),
-  };
-}
-
 function buildTargetPoseForToken(token: SignRepresentationToken): AvatarPose {
   const glossUpper = token.gloss.toUpperCase();
   const basePreset = GLOSS_POSES[glossUpper] ?? {};
@@ -345,6 +285,14 @@ function buildTargetPoseForToken(token: SignRepresentationToken): AvatarPose {
   const resolvedLeftArm: ArmPose = basePreset.leftArm
     ? { ...basePreset.leftArm }
     : { ...REST_ARM_LEFT };
+
+  // Fingerspelled letters carry their handshape on the signing (right) hand.
+  if (token.clipId.startsWith("asl_fs_")) {
+    const handshape = handshapeForToken(token.gloss);
+    if (handshape !== null) {
+      resolvedRightArm.fingerCurl = [handshape[0], handshape[1], handshape[2], handshape[3], handshape[4]];
+    }
+  }
 
   // Adjust for spatial loci anchors
   if (token.spatialLoci) {
@@ -363,30 +311,17 @@ function buildTargetPoseForToken(token: SignRepresentationToken): AvatarPose {
     resolvedRightArm.shoulderRotation[1] += targetOffset.x * 0.5;
   }
 
-  // Adjust for non-manual facial markers
-  let eyebrowRaise = basePreset.eyebrowRaise ?? 0;
-  let eyebrowFurrow = basePreset.eyebrowFurrow ?? 0;
-  if (token.nonManualMarkers) {
-    if (token.nonManualMarkers.eyebrowShape === "raise") {
-      eyebrowRaise = token.nonManualMarkers.eyebrowIntensity;
-      eyebrowFurrow = 0;
-    } else if (token.nonManualMarkers.eyebrowShape === "furrow") {
-      eyebrowFurrow = token.nonManualMarkers.eyebrowIntensity;
-      eyebrowRaise = 0;
-    }
-  }
-
-  const headPitch = token.nonManualMarkers?.headRotation?.pitch ?? basePreset.headRotation?.[0] ?? 0;
-  const headYaw = token.nonManualMarkers?.headRotation?.yaw ?? basePreset.headRotation?.[1] ?? 0;
-  const headRoll = token.nonManualMarkers?.headRotation?.roll ?? basePreset.headRotation?.[2] ?? 0;
+  // Face driven 1:1 from the token's linguistic non-manual markers
+  // (wh-question furrow, yes/no raise, mouth morphemes, head shake/nod/tilt).
+  const face = facePoseForToken(token);
 
   return {
-    headRotation: [headPitch, headYaw, headRoll],
-    eyebrowRaise,
-    eyebrowFurrow,
-    mouthOpen: token.nonManualMarkers?.mouthShape === "open" ? 0.35 : basePreset.mouthOpen ?? 0,
-    mouthSmile: basePreset.mouthSmile ?? 0.1,
-    mouthWidth: basePreset.mouthWidth ?? 1,
+    headRotation: [face.headPitch, face.headYaw, face.headRoll],
+    eyebrowRaise: face.eyebrowRaise,
+    eyebrowFurrow: face.eyebrowFurrow,
+    mouthOpen: face.mouthOpen,
+    mouthSmile: face.mouthSmile,
+    mouthWidth: face.mouthWidth,
     chestPitch: 0,
     leftArm: resolvedLeftArm,
     rightArm: resolvedRightArm,
@@ -772,19 +707,19 @@ export function WebglAvatar({
           const targetPose = buildTargetPoseForToken(currentToken);
 
           if (elapsedMs < leadInMs) {
-            // Phase 1: Lead-In Transition
-            const factor = evaluateCurve(currentToken.interpolationCurve, elapsedMs / leadInMs);
-            currentPoseRef.current = blendAvatarPose(previousPoseRef.current, targetPose, factor);
+            // Phase 1: Lead-In Transition (coarticulated from end of previous sign)
+            const rawT = leadInMs > 0 ? elapsedMs / leadInMs : 1;
+            currentPoseRef.current = blendPoses(previousPoseRef.current, targetPose, rawT);
           } else if (elapsedMs < leadInMs + holdMs) {
             // Phase 2: Hold Sign Stroke
             currentPoseRef.current = targetPose;
           } else if (elapsedMs < totalTokenDuration) {
-            // Phase 3: Lead-Out Transition
+            // Phase 3: Lead-Out Transition (coarticulated into the next sign)
             const nextToken = tokens[index + 1];
             const nextTargetPose = nextToken ? buildTargetPoseForToken(nextToken) : REST_POSE;
             const outElapsed = elapsedMs - leadInMs - holdMs;
-            const factor = evaluateCurve(currentToken.interpolationCurve, outElapsed / leadOutMs);
-            currentPoseRef.current = blendAvatarPose(targetPose, nextTargetPose, factor);
+            const rawT = leadOutMs > 0 ? outElapsed / leadOutMs : 1;
+            currentPoseRef.current = blendPoses(targetPose, nextTargetPose, rawT);
           } else {
             // Advance to next token or finalize
             if (index + 1 < tokens.length) {
@@ -827,7 +762,7 @@ export function WebglAvatar({
         };
 
         // Smooth return to idle rest pose
-        currentPoseRef.current = blendAvatarPose(currentPoseRef.current, idlePose, 0.08);
+        currentPoseRef.current = blendPoses(currentPoseRef.current, idlePose, 0.08);
       }
 
       // Apply currentPoseRef to Three.js Skeleton Transforms

@@ -31,10 +31,12 @@ Converse supports a dual-track transport model combining WebSockets and WebRTC:
 ```
 
 1. **WebSocket Track (`/ws/realtime`)**:
-   - Primary control plane and event stream.
-   - Handles connection handshake, session initialization, capability negotiation, ping/pong keepalives, and session termination.
-   - Transmits structured JSON events: sign detection tokens, intermediate transcript updates, translation results, and synthesized audio chunks.
-   - Serves as the universal baseline transport when WebRTC peer connections cannot be established due to restrictive enterprise firewalls or NAT configurations.
+    - Primary control plane and event stream.
+    - Handles connection handshake, session initialization, capability negotiation, ping/pong keepalives, and session termination.
+    - Transmits structured JSON events: sign detection tokens, intermediate transcript updates, translation results, and synthesized audio chunks.
+    - Serves as the universal baseline transport when WebRTC peer connections cannot be established due to restrictive enterprise firewalls or NAT configurations.
+
+> Implementation note (ADR-011): the gateway currently mounts this track at **`/ws/meeting`** with per-`sessionId` rooms and multi-client fan-out, a 30 s server heartbeat interval, and query-param session binding (`sessionId`, `clientId`, `direction`). The `/ws/realtime` path, 3 s init timeout (close `4408`), and WebRTC track remain specified-but-unimplemented.
 
 2. **WebRTC Track (`/webrtc/offer`, `/webrtc/answer`, `/webrtc/ice`)**:
    - Low-latency media transport track.
@@ -68,7 +70,7 @@ A Converse real-time session transitions through four distinct phases:
 
 ### 2.1 Phase 1: Connection and Session Initialization
 
-1. Client opens a WebSocket connection to `wss://<host>:<port>/ws/realtime`.
+1. Client opens a WebSocket connection to `wss://<host>:<port>/ws/realtime` (implemented as `/ws/meeting`, see note above).
 2. Within 3000 milliseconds of socket connection, the client must transmit a `session_init` message defining the communication direction, client identifier, and media configuration.
 3. The server allocates a session state record, reserves downstream ML worker pipelines, and replies with `session_ready`.
 4. If `session_init` is not received within the 3000 millisecond timeout window, the server closes the connection with WebSocket close code `4408` (Initialization Timeout).

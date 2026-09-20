@@ -15,11 +15,11 @@ import {
   type SessionReadyPayload,
   type SignDetectedPayload,
   type SignRepresentation,
-  type SignRepresentationToken,
   type SignToken,
   type TranscriptUpdatePayload,
   type TranslationResultPayload,
   type TtsAudioPayload,
+  buildFallbackSignRepresentation,
   reconstructSentence,
 } from "@converse/contracts";
 import { transcribeSpeech, translateSpeechToSign } from "./speech-to-sign.js";
@@ -108,58 +108,6 @@ function broadcastToRoom<T>(
     }
     sendJson(client.socket, message);
   }
-}
-
-function buildFallbackSignRepresentation(
-  glosses: string[],
-  sessionId: string,
-): SignRepresentation {
-  const tokenDuration = 600;
-  const leadIn = 150;
-  const hold = 300;
-  const leadOut = 150;
-
-  const tokens: SignRepresentationToken[] = glosses.map((gloss, index) => {
-    const isQuestion = gloss === "WHAT" || gloss === "HOW" || gloss === "WHY" || gloss === "WHERE";
-    return {
-      tokenId: `token_${index}_${gloss.toLowerCase()}`,
-      clipId: `clip_${gloss.toLowerCase()}`,
-      gloss,
-      timing: {
-        startTimeMs: index * tokenDuration,
-        leadInDurationMs: leadIn,
-        holdDurationMs: hold,
-        leadOutDurationMs: leadOut,
-      },
-      spatialLoci: {
-        anchor: isQuestion ? "neutral_space" : "chest",
-        targetOffset: {
-          x: (index % 2 === 0 ? 0.05 : -0.05),
-          y: 0.1,
-          z: 0.25,
-        },
-      },
-      nonManualMarkers: {
-        eyebrowIntensity: isQuestion ? 0.85 : 0.2,
-        eyebrowShape: isQuestion ? "furrow" : "neutral",
-        headRotation: {
-          pitch: isQuestion ? 0.08 : 0,
-          yaw: 0,
-          roll: 0,
-        },
-        mouthShape: "open",
-      },
-      interpolationCurve: "ease_in_out",
-    };
-  });
-
-  return {
-    version: "1.0.0",
-    sessionId,
-    utteranceId: `utt_${Date.now()}`,
-    totalDurationMs: Math.max(tokens.length * tokenDuration, tokenDuration),
-    tokens,
-  };
 }
 
 export function setupRealtimeGateway(server: HttpServer): WebSocketServer {
@@ -378,7 +326,16 @@ export function setupRealtimeGateway(server: HttpServer): WebSocketServer {
         case "audio_chunk": {
           const audioPayload = message.payload as AudioChunkPayload;
           if (!audioPayload?.audioBase64) {
-            return;
+            sendJson(
+              socket,
+              createRealtimeEnvelope("error", clientSessionId, {
+                component: "protocol",
+                code: "EMPTY_AUDIO_PAYLOAD",
+                message: "audio_chunk requires a non-empty audioBase64 payload",
+                recoverable: true,
+              } satisfies RealtimeErrorPayload),
+            );
+            break;
           }
 
           // Transcribe through speech recognition pipeline
@@ -401,7 +358,25 @@ export function setupRealtimeGateway(server: HttpServer): WebSocketServer {
             transcriptText = "Hello, welcome to our meeting.";
           }
 
-          if (transcriptText.trim().length > 0) {
+          if (transcriptText.trim().length === 0) {
+            // Empty transcription (silence/noise): acknowledge explicitly so
+            // clients never hang waiting for a reply that will not come.
+            const emptyTranscript: TranscriptUpdatePayload = {
+              transcript: "",
+              isFinal: audioPayload.isFinal,
+              confidence: 0,
+              durationMs: asrDurationMs,
+            };
+            const emptyMsg = createRealtimeEnvelope(
+              "transcript_update",
+              clientSessionId,
+              emptyTranscript,
+            );
+            sendJson(socket, emptyMsg);
+            break;
+          }
+
+          {
             const transcriptPayload: TranscriptUpdatePayload = {
               transcript: transcriptText,
               isFinal: audioPayload.isFinal,

@@ -5,9 +5,9 @@ This document tracks the technical execution plan, deliverables, completion crit
 ```mermaid
 flowchart LR
     M0["Milestone 0: Monorepo Setup & Contracts (Completed)"]
-    M1["Milestone 1: ASL Vision & 3D Landmarks (In Progress)"]
-    M2["Milestone 2: Translation Engine, ASR & TTS (Planned)"]
-    M3["Milestone 3: Streaming API & Web Application (Planned)"]
+    M1["Milestone 1: ASL Vision & 3D Landmarks (In Progress - eval pending)"]
+    M2["Milestone 2: Translation Engine, ASR & TTS (In Progress - eval pending)"]
+    M3["Milestone 3: Streaming API & Web Application (In Progress - hardening pending)"]
     M4["Milestone 4: VoIP Integration & Extension (Planned)"]
 
     M0 --> M1
@@ -73,7 +73,16 @@ Completed
 Build the client-edge and backend vision perception pipeline to extract 3D landmarks from video streams, normalize spatial coordinates, buffer temporal windows, and classify isolated ASL signs.
 
 ### Status
-In Progress
+In Progress (perception hardening complete; quantitative eval pending)
+
+### Implementation Notes
+- `ASLVisionEngine` resolves pretrained `tgcn_asl100.bin` into `TGCNModel` by default with STGCN fallback (ADR-009).
+- Inference gated on temporal motion variance (`>= 0.015`), wrist-stationary resting-pose detector (`> 300 ms`), and below-chest suppression.
+- Sliding windows carry `motion_energy`, `variance`, and `is_idle` metadata.
+- 156 `ml/asl-vision` tests passing, including static-ORANGE suppression and ONNX parity.
+- Measured (CPU, synthetic windows, mock model): infer-step p50 ~0.00 ms, p95 0.27 ms, max 2.09 ms — inside the 45 ms budget excluding MediaPipe extraction.
+- Offline eval on 10 real WLASL clips (`scripts/eval_wlasl_offline.py`): 0/10 Top-1 across a 12-way convention sweep (joint orders x normalizations x hand orders). Third-party `tgcn_asl100.bin` does not recognize MediaPipe-derived skeletons under any tested convention despite exact architecture match; joint order (BODY_25) and pixel-scale normalization fixed in code. Remediation: harvesting WLASL100 features through the live pipeline (`scripts/harvest_wlasl_features.py`) to train our own TGCN on matching features.
+- Pending: MediaPipe FPS benchmark, and 70% Top-1 WLASL-100 eval on unseen signers (blocked on retraining).
 
 ### Deliverables
 - Video frame ingestion worker supporting standard webcam inputs (640x480 resolution, 30 FPS).
@@ -119,7 +128,15 @@ In Progress
 Develop the bidirectional translation engine connecting ASL gloss sequences to fluent English, integrate low-latency streaming ASR (Speech-to-Text), and integrate natural neural TTS (Text-to-Speech).
 
 ### Status
-Planned
+In Progress (functional implementation complete; benchmark eval pending)
+
+### Implementation Notes
+- English-to-ASL grammar compiler with 1,500+ meeting lexicon, 3,200+ lemma map, and idiom normalization (46 translation tests passing).
+- ASR backends behind `AsrEngineProtocol`: AWS Transcribe Streaming production default with Whisper local fallback, zero silent fallback (ADR-008).
+- Native `converse-tts` Edge-TTS engine with `/internal/tts/synthesize` endpoint and gateway proxy (ADR-010); 8 TTS tests passing.
+- Sentence reconstruction owned by `@converse/contracts` (ADR-011); 60 web reconstruction tests passing.
+- Measured (CPU): translation `translate()` p50 0.05-0.12 ms across 5-12 word utterances; contracts `reconstructSentence` p50 0.001 ms — both far inside the 350 ms streaming budget.
+- Pending: BLEU-4 on How2Sign, WER and 250 ms partial-transcript ASR benchmarks, and 180 ms TTS TTFB measurement.
 
 ### Deliverables
 - Continuous sign language sequence processor handling sign boundaries and co-articulation.
@@ -163,7 +180,12 @@ Planned
 Deliver the centralized real-time streaming infrastructure, WebSocket session management, and the interactive web application demonstrating bidirectional communication.
 
 ### Status
-Planned
+In Progress (functional implementation complete; hardening pending)
+
+### Implementation Notes
+- Room-based WebSocket gateway at `/ws/meeting` with `session_init`/`session_ready`, keepalive, and both-direction fan-out (ADR-011).
+- `/meeting` dual-pane page: signer pane plus hearing pane with Three.js WebGL avatar; `pnpm build` renders `/`, `/_not-found`, `/meeting`.
+- Pending: E2E latency budgets (500 ms sign-to-speech, 400 ms speech-to-sign), sub-3 s reconnect without state loss, and malformed-frame injection suite.
 
 ### Deliverables
 - Express.js WebSocket gateway (`services/api`) implementing `@converse/protocol`:

@@ -281,7 +281,7 @@ Implement a decoupled, modular Speech-to-Sign model pipeline:
 
 ---
 
-## ADR-007: Amazon Transcribe Streaming Integration as Production ASR Engine
+## ADR-008: Amazon Transcribe Streaming Integration as Production ASR Engine
 
 ### Status
 
@@ -315,4 +315,97 @@ For production deployment in AWS environments, Amazon Transcribe Streaming provi
 
 - Amazon Transcribe Streaming is a metered cloud service requiring an active AWS account and IAM permissions.
 - Network latency to AWS regional endpoints (`ap-south-1`) must be monitored to ensure streaming budget compliance.
+
+---
+
+## ADR-009: Pretrained TGCN Default with Motion-Energy and Resting-Pose Gating
+
+### Status
+
+Accepted
+
+### Context
+
+The vision engine always fell back to a randomly-initialized ST-GCN because no pretrained checkpoint was resolved by default, and it emitted static false positives (notably idle `ORANGE` when a hand rested at the chin) because every full window ran inference regardless of motion content.
+
+### Decision
+
+1. Resolve `tgcn_asl100.bin` by default with CWD-agnostic lookup and load it into `TGCNModel` in eval mode; explicit-missing paths return `None` so callers cleanly fall back to STGCN.
+2. Gate inference on temporal coordinate variance (`>= 0.015`) computed over signing limbs.
+3. Suppress emission while the wrist-stationary resting-pose detector fires (`> 300 ms`) or hands rest below chest level.
+4. Carry `motion_energy`, `variance`, and `is_idle` metadata on every sliding-window output.
+
+### Consequences
+
+#### Positive
+
+- Pretrained recognition out of the box with no caller configuration.
+- Static idle poses no longer produce spurious glosses.
+- Window metadata lets downstream stages distinguish idle from active signing.
+
+#### Negative
+
+- Very slow or subtle signs near the variance floor can be suppressed; threshold tuning is signer-dependent.
+- Checkpoint filename is effectively pinned (`tgcn_asl100.bin`) for default resolution.
+
+---
+
+## ADR-010: Native Edge-TTS Voice Engine with Service Synthesis Endpoint
+
+### Status
+
+Accepted
+
+### Context
+
+Sign-to-speech depended on an external Kokoro Docker container with system-TTS fallback, so the pipeline could not speak standalone and demos required Docker.
+
+### Decision
+
+1. Add the `converse-tts` package (`EdgeTtsEngine`) emitting WAV audio with duration metadata.
+2. Expose `POST /internal/tts/synthesize` on the ML service in binary WAV and base64-JSON modes.
+3. Proxy it through the API gateway (`POST /api/speech/tts`) with typed `Result` error mapping.
+4. Provide `scripts/setup_virtual_mic.sh` to route synthesized speech into a virtual microphone for VoIP use.
+
+### Consequences
+
+#### Positive
+
+- Neural voice without Docker; gateway clients receive playable audio.
+- Virtual-mic routing enables Meet/Zoom injection (Milestone 4 groundwork).
+
+#### Negative
+
+- Edge-TTS is network-backed; offline operation still needs a local synthesizer fallback.
+- Default gateway voice is `en-US-ChristopherNeural`, distinct from the `"default-neutral"` placeholder in earlier specs.
+
+---
+
+## ADR-011: Room-Based Meeting Gateway with Contracts-Owned Reconstruction
+
+### Status
+
+Accepted
+
+### Context
+
+The gateway exposed only unary REST routes, so browsers could not stream landmarks and audio bidirectionally within a shared meeting session, and sentence reconstruction lived in the web app instead of the shared contracts.
+
+### Decision
+
+1. Mount a `ws`-based gateway at `/ws/meeting` with per-`sessionId` rooms, multi-client fan-out, `session_init`/`session_ready` handshake, `ping`/`pong` keepalive (30 s interval), and handlers for `frame_landmarks`, `sign_detected` (server-side reconstruction), `audio_chunk` (ASR then translation), plus `transcript_update`/`translation_result`/`tts_audio` broadcast.
+2. Move sentence reconstruction into `@converse/contracts` (`reconstructor.ts`) as the single source of truth; the web app re-exports it.
+3. Serve both pipeline directions from one `/meeting` page: signer pane plus hearing pane with Three.js WebGL avatar and client-side representation fallback.
+
+### Consequences
+
+#### Positive
+
+- One socket carries both directions with shared session state.
+- Reconstruction behavior is identical on server and client.
+
+#### Negative
+
+- Implemented path (`/ws/meeting`) differs from the `/ws/realtime` path in the protocol spec; clients must use the implemented path until the spec paths converge.
+- Reconnection without state loss (Milestone 3 criterion) is not yet implemented.
 

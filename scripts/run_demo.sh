@@ -14,7 +14,16 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Resolve the monorepo root by walking up to the directory containing
+# pnpm-workspace.yaml (this script lives at the root, scripts/ runners live below it).
+REPO_ROOT="$SCRIPT_DIR"
+while [ "$REPO_ROOT" != "/" ] && [ ! -f "$REPO_ROOT/pnpm-workspace.yaml" ]; do
+    REPO_ROOT="$(dirname "$REPO_ROOT")"
+done
+if [ ! -f "$REPO_ROOT/pnpm-workspace.yaml" ]; then
+    echo "Error: could not locate monorepo root (pnpm-workspace.yaml) from $SCRIPT_DIR" >&2
+    exit 1
+fi
 ML_DIR="$REPO_ROOT/ml/asl-vision"
 
 KOKORO_IMAGE="ghcr.io/lucasjinreal/kokoros:main"

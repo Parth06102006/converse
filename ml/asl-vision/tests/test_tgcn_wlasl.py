@@ -169,7 +169,7 @@ def test_tgcn_classifier_full_inference() -> None:
 
 
 def test_extract_upper_body_pose_bounds_and_missing() -> None:
-    """Verify pose extraction normalization preserves -1.0 bounds for missing landmarks without out-of-range artifacts."""
+    """Verify pose extraction reproduces BODY_25 training slot order with -1.0 for missing landmarks."""
     # Case 1: None pose
     out_none = _extract_upper_body_pose(None)
     assert out_none.shape == (13, 2)
@@ -182,12 +182,13 @@ def test_extract_upper_body_pose_bounds_and_missing() -> None:
     assert out_short.shape == (13, 2)
     assert out_short[0, 0] == pytest.approx(0.0)
     assert out_short[0, 1] == pytest.approx(0.0)
-    # MediaPipe indices 11, 12, 13, 14, 15, 16, 23, 24 do not exist in length 10 pose
-    for i in (1, 2, 3, 4, 5, 6, 7, 8):
+    # All remaining BODY_25 slots need landmarks beyond length 10 (or are exact-zero)
+    for i in range(1, 13):
         assert out_short[i, 0] == -1.0
         assert out_short[i, 1] == -1.0
 
-    # Case 3: Standard 33-point MediaPipe pose
+    # Case 3: Standard 33-point MediaPipe pose, BODY_25 slot order:
+    # [Nose, Neck, RSh, RElb, RWri, LSh, LElb, LWri, MidHip, REye, LEye, REar, LEar]
     full_pose = np.zeros((33, 4), dtype=np.float32)
     full_pose[0] = [0.5, 0.25, 0.0, 1.0]   # Nose
     full_pose[11] = [0.6, 0.40, 0.0, 1.0]  # LShoulder
@@ -201,14 +202,20 @@ def test_extract_upper_body_pose_bounds_and_missing() -> None:
     # 0: Nose (0.5, 0.25) -> (0.0, -0.5)
     assert out_full[0, 0] == pytest.approx(0.0)
     assert out_full[0, 1] == pytest.approx(-0.5)
-    # 1: LShoulder (MediaPipe 11) at 0.6 -> maps to 0.2
-    assert out_full[1, 0] == pytest.approx(0.2)
+    # 1: Neck = midpoint of shoulders ((0.6+0.4)/2, 0.40) -> (0.0, -0.2)
+    assert out_full[1, 0] == pytest.approx(0.0, abs=1e-6)
+    assert out_full[1, 1] == pytest.approx(-0.2)
     # 2: RShoulder (MediaPipe 12) at 0.4 -> maps to -0.2
     assert out_full[2, 0] == pytest.approx(-0.2)
-    # 5: LWrist (MediaPipe 15) at 0.65 -> maps to 0.3
-    assert out_full[5, 0] == pytest.approx(0.3)
-    # 6: RWrist (MediaPipe 16) at 0.35 -> maps to -0.3
-    assert out_full[6, 0] == pytest.approx(-0.3)
+    # 4: RWrist (MediaPipe 16) at 0.35 -> maps to -0.3
+    assert out_full[4, 0] == pytest.approx(-0.3)
+    # 5: LShoulder (MediaPipe 11) at 0.6 -> maps to 0.2
+    assert out_full[5, 0] == pytest.approx(0.2)
+    # 7: LWrist (MediaPipe 15) at 0.65 -> maps to 0.3
+    assert out_full[7, 0] == pytest.approx(0.3)
+    # 8: MidHip needs MediaPipe 23/24 (absent) -> stays -1.0
+    assert out_full[8, 0] == -1.0
+    assert out_full[8, 1] == -1.0
 
 
 @pytest.mark.skipif(not CHECKPOINT_PATH.is_file(), reason="Pretrained TGCN checkpoint not downloaded")

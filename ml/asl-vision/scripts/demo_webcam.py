@@ -44,7 +44,7 @@ import numpy as np
 
 from asl_vision.engine import ASLVisionEngine, EngineConfig, SignDetection
 from asl_vision.landmarks import LandmarkExtractor, assign_hands_by_geometry
-from asl_vision.models.tgcn_wlasl import TGCNWLASLClassifier
+from asl_vision.models.tgcn_wlasl import TGCNModel, TGCNWLASLClassifier
 
 # Landmark bone connections for visual skeletal overlay
 HAND_CONNECTIONS = (
@@ -1127,11 +1127,13 @@ def run_webcam_demo(
             # Flip frame for mirror interaction display
             frame = cv2.flip(frame, 1)
 
-            # 2. Neural Gesture Model inference (MediaPipe) & hand landmark fusion
-            neural_det: SignDetection | None = None
+            # 2. Neural Gesture Model inference (MediaPipe) & hand landmark fusion.
+            # NOTE: the returned generic-gesture detection is intentionally
+            # discarded (HUD hint via neural_desc only); canned gestures are
+            # not ASL and must not drive sign decisions.
             neural_desc: str | None = None
             if neural_model is not None:
-                neural_det, neural_desc = neural_model.process_frame(
+                _, neural_desc = neural_model.process_frame(
                     frame_rgb=raw_rgb,
                     extracted=extracted,
                     timestamp_ms=timestamp_ms,
@@ -1191,19 +1193,24 @@ def run_webcam_demo(
             # 4. Spatiotemporal sequence inference (ST-GCN)
             detections = engine.process_landmarks(extracted, timestamp_ms=timestamp_ms)
 
-            # Arbitrate active detection: Prioritize static facial/gesture recognizer or dynamic TGCN
+            # Arbitrate active detection on a single gated decision path.
+            # The generic MediaPipe Gesture Recognizer (canned everyday gestures,
+            # not ASL) is HUD hint only: it must never win ASL decisions.
+            # Priority: gated ASLVisionEngine first, TGCN buffer second.
             active_det: SignDetection | None = None
             det_source = ""
-            arb_threshold = neural_model.min_confidence if neural_model is not None else 0.55
-            if neural_det is not None and neural_det.confidence >= arb_threshold:
-                active_det = neural_det
-                det_source = "Gesture Recognizer"
+            if engine.onnx_session is not None:
+                engine_source = "VisionEngine-ONNX"
+            elif isinstance(engine.pytorch_model, TGCNModel):
+                engine_source = "VisionEngine-TGCN"
+            else:
+                engine_source = "VisionEngine-STGCN"
+            if detections:
+                active_det = detections[0]
+                det_source = engine_source
             elif tgcn_det is not None:
                 active_det = tgcn_det
-                det_source = "WLASL-100 TGCN"
-            elif detections:
-                active_det = detections[0]
-                det_source = "ST-GCN"
+                det_source = "WLASL-100 TGCN buffer"
 
             if active_det is not None:
                 last_detection = active_det
