@@ -220,9 +220,27 @@ class AvatarState:
                     self.r_wrist_target = np.array([-0.16, 0.12], dtype=np.float32)  # Tapping left wrist
                     self.l_wrist_target = np.array([-0.20, 0.16], dtype=np.float32)
                 else:
-                    # Generic / Fingerspelling at spatial locus
+                    # Unmapped gloss: derive a distinct, deterministic target so
+                    # every token visibly animates instead of freezing. Single
+                    # letters (fingerspelling) spread across neutral space so
+                    # spelling reads as movement. Placeholders until recorded
+                    # motion curves land; spatial anchor still honored.
                     locus_shift = offset_x * 0.35
-                    self.r_wrist_target = np.array([0.18 + locus_shift, -0.20], dtype=np.float32)
+                    if len(g) == 1 and g.isalpha():
+                        slot = (ord(g) - ord("A")) % 8
+                        self.r_wrist_target = np.array(
+                            [-0.12 + slot * 0.035 + locus_shift, -0.28], dtype=np.float32
+                        )
+                    else:
+                        import hashlib
+
+                        h = int(hashlib.md5(g.encode()).hexdigest()[:4], 16)
+                        hx = ((h >> 4) & 0xF) / 15.0 - 0.5
+                        hy = (h & 0xF) / 15.0 - 0.5
+                        self.r_wrist_target = np.array(
+                            [0.18 + locus_shift + hx * 0.12, -0.20 + hy * 0.12],
+                            dtype=np.float32,
+                        )
                     self.l_wrist_target = np.array([-0.25, 0.28], dtype=np.float32)
 
             else:
