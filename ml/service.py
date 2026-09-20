@@ -1,5 +1,6 @@
 """Internal HTTP microservice exposing ASR and Speech-to-Sign translation capabilities."""
 
+import base64
 import json
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -10,7 +11,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "asr" / "src"))
 sys.path.insert(0, str(ROOT / "translation" / "src"))
+sys.path.insert(0, str(ROOT / "tts" / "src"))
 
+from converse_tts.engine import EdgeTtsEngine
 from translation.pipeline import SpeechToSignPipeline
 
 from asr.engine import AsrEngineProtocol, create_asr_engine
@@ -28,6 +31,7 @@ class ModelServiceHandler(BaseHTTPRequestHandler):
 
     pipeline = SpeechToSignPipeline()
     asr_engine: AsrEngineProtocol = create_asr_engine()
+    tts_engine: EdgeTtsEngine = EdgeTtsEngine()
 
     @classmethod
     def get_engine(cls, backend_override: str | None = None) -> AsrEngineProtocol:
@@ -87,6 +91,8 @@ class ModelServiceHandler(BaseHTTPRequestHandler):
             self._handle_flush(body)
         elif self.path == "/internal/pipeline/audio-to-sign":
             self._handle_audio_to_sign(body)
+        elif self.path == "/internal/tts/synthesize":
+            self._handle_tts(body)
         else:
             self._send_json(404, {"ok": False, "error": f"Endpoint not found: {self.path}"})
 
@@ -240,6 +246,63 @@ class ModelServiceHandler(BaseHTTPRequestHandler):
             })
         except Exception as e:  # noqa: BLE001
             self._handle_asr_error(e)
+
+    def _handle_tts(self, body: dict[str, Any]) -> None:
+        try:
+            text = body.get("text", "")
+            if not isinstance(text, str) or not text.strip():
+                self._send_json(400, {"ok": False, "error": "text must not be empty"})
+                return
+
+            voice = body.get("voice") or "en-US-ChristopherNeural"
+            rate = body.get("rate") or "+0%"
+            pitch = body.get("pitch") or "+0Hz"
+            audio_format = str(body.get("format") or "wav").lower()
+            response_format = str(body.get("response_format", "")).lower()
+
+            audio_bytes = self.tts_engine.synthesize_sync(
+                text=text,
+                voice=voice,
+                rate=rate,
+                pitch=pitch,
+                audio_format=audio_format,
+            )
+
+            # Calculate duration in ms
+            if audio_format in ("pcm", "pcm_s16le", "raw"):
+                duration_ms = EdgeTtsEngine.calculate_duration_ms(
+                    len(audio_bytes),
+                    sample_rate=self.tts_engine.sample_rate,
+                )
+            else:
+                pcm_len = max(0, len(audio_bytes) - 44) if len(audio_bytes) >= 44 else 0
+                duration_ms = EdgeTtsEngine.calculate_duration_ms(
+                    pcm_len,
+                    sample_rate=self.tts_engine.sample_rate,
+                )
+
+            accept_header = self.headers.get("Accept", "")
+            if response_format == "json" or ("application/json" in accept_header and "audio/" not in accept_header):
+                self._send_json(200, {
+                    "ok": True,
+                    "data": {
+                        "audioBase64": base64.b64encode(audio_bytes).decode("ascii"),
+                        "audioFormat": audio_format,
+                        "durationMs": duration_ms,
+                    },
+                })
+                return
+
+            content_type = "audio/pcm" if audio_format in ("pcm", "pcm_s16le", "raw") else "audio/wav"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(audio_bytes)))
+            self.send_header("X-Audio-Duration-Ms", f"{duration_ms:.1f}")
+            self.send_header("X-Audio-Format", audio_format)
+            self.end_headers()
+            self.wfile.write(audio_bytes)
+        except Exception as e:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": f"TTS synthesis failed: {e}", "code": "TTS_SYNTHESIS_ERROR"})
 
 
 def run_server(port: int = 5050) -> None:
