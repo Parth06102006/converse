@@ -35,12 +35,8 @@ export OPENCV_LOG_LEVEL="ERROR"
 # Ensure Qt font directory exists if .venv is present
 mkdir -p "$REPO_ROOT/ml/asr/.venv/lib/python3.12/site-packages/cv2/qt/fonts" 2>/dev/null || true
 
-# Preflight: Ensure real physical microphone is selected as default and unmuted
-if command -v wpctl &>/dev/null; then
-    # Set default audio source to physical microphone (node 86 or analog-stereo)
-    wpctl set-default 86 2>/dev/null || true
-    wpctl set-volume 86 0.65 2>/dev/null || true
-fi
+# Preflight: leave the user's default source alone (headset or mic) and only
+# ensure the Internal Mic Boost does not saturate when the onboard mic is used.
 if command -v amixer &>/dev/null; then
     # Set Internal Mic Boost to level 1 (+10dB) to prevent saturation clipping
     amixer -c 2 set 'Internal Mic Boost',0 1 2>/dev/null || true

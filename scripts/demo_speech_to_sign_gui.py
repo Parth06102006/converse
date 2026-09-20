@@ -339,22 +339,27 @@ class LiveAudioStreamer:
         self.active_device_name = "Default Microphone"
 
         if self.sources:
-            # Default to internal laptop physical mic if available, or current default
+            # Prefer the system default source (the mic the user actually
+            # speaks into, e.g. a Bluetooth headset), then the internal
+            # analog mic, then whatever is first. Never assume onboard.
             chosen_idx = 0
             for idx, s in enumerate(self.sources):
-                if s["type"] == "internal" or "analog" in s["name"].lower():
+                if s["is_default"]:
                     chosen_idx = idx
                     break
-                elif s["is_default"]:
-                    chosen_idx = idx
+            else:
+                for idx, s in enumerate(self.sources):
+                    if s["type"] == "internal" or "analog" in s["name"].lower():
+                        chosen_idx = idx
+                        break
 
             self.active_source_idx = chosen_idx
             self.active_device_name = self.sources[chosen_idx]["name"]
             target_id = self.sources[chosen_idx]["id"]
 
-            # Ensure WirePlumber uses the physical mic and healthy gain
+            # Healthy gain on the chosen node only; do not steal the system
+            # default away from the user's headset or conferencing setup.
             with contextlib.suppress(Exception):
-                subprocess.run(["wpctl", "set-default", str(target_id)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 subprocess.run(["wpctl", "set-volume", str(target_id), "0.65"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         self.is_running = False
@@ -409,7 +414,6 @@ class LiveAudioStreamer:
         target_id = active_source["id"]
 
         with contextlib.suppress(Exception):
-            subprocess.run(["wpctl", "set-default", str(target_id)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["wpctl", "set-volume", str(target_id), "0.65"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         # Terminate current recording process; _stream_loop will respawn it on next iteration
