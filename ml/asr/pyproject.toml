@@ -15,6 +15,9 @@ dependencies = [
     "scipy>=1.18.1",
     "soundfile>=0.14.0",
     "amazon-transcribe>=0.6.4",
+    "opencv-contrib-python>=5.0.0.93",
+    "edge-tts>=7.2.8",
+    "miniaudio>=1.71",
 ]
 
 [project.scripts]
